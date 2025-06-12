@@ -1,0 +1,30 @@
+{
+  "serial": {
+    "port": "COM3",
+    "baudRate": 115200,
+    "dataBits": 8,
+    "stopBits": 1,
+    "parity": "none",
+    "timeout": 5000,
+    "autoReconnect": true,
+    "reconnectInterval": 3000,
+    "maxReconnectAttempts": 5
+  },
+  "logging": {
+    "level": "info",
+    "file": "./logs/sync.log",
+    "maxSize": "10m",
+    "maxFiles": 5,
+    "format": "combined"
+  },
+  "server": {
+    "port": 3001,
+    "host": "localhost"
+  },
+  "sync": {
+    "chunkSize": 1024,
+    "timeout": 30000,
+    "retryAttempts": 3,
+    "compression": true
+  }
+} 

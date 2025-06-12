@@ -1,0 +1,248 @@
+# SerialSync - 串口通信程序
+
+一个基于 Node.js 开发的专业串口通信同步程序，提供现代化的 Web 界面和强大的串口通信功能。
+
+## 🌟 功能特性
+
+- **串口通信**: 支持多种串口参数配置
+- **自动重连**: 智能的断线重连机制
+- **数据校验**: 内置数据完整性校验
+- **压缩传输**: 支持数据压缩提高传输效率
+- **实时监控**: Web 界面实时显示连接状态
+- **日志记录**: 完整的操作日志和安全审计
+- **错误处理**: 优雅的错误处理和恢复机制
+- **响应式设计**: 支持桌面和移动设备
+
+## 📋 系统要求
+
+- Node.js v16.0.0 或更高版本
+- Windows/Linux/macOS 操作系统
+- 串口设备（USB转串口适配器或内置串口）
+
+## 🚀 快速开始
+
+### 1. 安装依赖
+
+```bash
+npm install
+```
+
+### 2. 配置串口
+
+编辑 `src/config/default.json` 文件，修改串口配置：
+
+```json
+{
+  "serial": {
+    "port": "COM3",        // Windows: COM3, Linux: /dev/ttyUSB0, macOS: /dev/tty.usbserial
+    "baudRate": 115200,    // 波特率
+    "dataBits": 8,         // 数据位
+    "stopBits": 1,         // 停止位
+    "parity": "none"       // 校验位
+  }
+}
+```
+
+### 3. 启动程序
+
+```bash
+# 开发模式
+npm run dev
+
+# 生产模式
+npm start
+```
+
+### 4. 访问 Web 界面
+
+打开浏览器访问: http://localhost:3000
+
+## 📁 项目结构
+
+```
+serial-sync/
+├── src/
+│   ├── core/              # 核心功能模块
+│   │   └── serial/        # 串口通信
+│   │       └── SerialManager.js
+│   ├── ui/                # 用户界面
+│   │   ├── server.js      # Web服务器
+│   │   └── public/        # 静态文件
+│   │       ├── index.html
+│   │       ├── styles.css
+│   │       └── app.js
+│   ├── utils/             # 工具函数
+│   │   └── logger.js      # 日志系统
+│   ├── config/            # 配置文件
+│   │   └── default.json
+│   └── index.js           # 主入口文件
+├── logs/                  # 日志文件目录
+├── package.json
+└── README.md
+```
+
+## ⚙️ 配置说明
+
+### 串口配置
+
+| 参数 | 说明 | 默认值 | 可选值 |
+|------|------|--------|--------|
+| port | 串口端口 | COM3 | COM1-COM99 (Windows) |
+| baudRate | 波特率 | 115200 | 9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600 |
+| dataBits | 数据位 | 8 | 7, 8 |
+| stopBits | 停止位 | 1 | 1, 2 |
+| parity | 校验位 | none | none, even, odd |
+| timeout | 超时时间(ms) | 5000 | 1000-30000 |
+| autoReconnect | 自动重连 | true | true, false |
+| reconnectInterval | 重连间隔(ms) | 3000 | 1000-10000 |
+| maxReconnectAttempts | 最大重连次数 | 5 | 1-20 |
+
+### 日志配置
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| level | 日志级别 | info |
+| file | 日志文件路径 | ./logs/sync.log |
+| maxSize | 最大文件大小 | 10m |
+| maxFiles | 最大文件数量 | 5 |
+
+### 服务器配置
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| port | Web服务器端口 | 3000 |
+| host | 服务器地址 | localhost |
+
+### 同步配置
+
+| 参数 | 说明 | 默认值 |
+|------|------|--------|
+| chunkSize | 数据块大小 | 1024 |
+| timeout | 超时时间(ms) | 30000 |
+| retryAttempts | 重试次数 | 3 |
+| compression | 启用压缩 | true |
+
+## 🔧 使用说明
+
+### Web 界面操作
+
+1. **连接串口**
+   - 选择正确的串口端口
+   - 配置串口参数（波特率、数据位等）
+   - 点击"连接"按钮
+
+2. **发送数据**
+   - 在发送区域输入要发送的数据
+   - 点击"发送"按钮
+   - 数据将分块发送并等待确认
+
+3. **接收数据**
+   - 接收到的数据会显示在接收区域
+   - 可以保存接收到的数据到文件
+   - 支持清空接收缓冲区
+
+4. **查看日志**
+   - 实时查看系统操作日志
+   - 支持导出日志文件
+   - 可以清空日志记录
+
+### 命令行操作
+
+```bash
+# 显示帮助信息
+node src/index.js --help
+
+# 显示版本信息
+node src/index.js --version
+
+# 指定配置文件
+node src/index.js --config ./config/custom.json
+```
+
+## 📊 性能指标
+
+- **传输速度**: > 10KB/s
+- **响应时间**: < 5秒
+- **内存使用**: < 100MB
+- **CPU使用率**: < 30%
+- **启动时间**: < 10秒
+
+## 🔒 安全特性
+
+- **数据校验**: 内置校验和验证
+- **安全日志**: 记录所有操作和安全事件
+- **错误处理**: 优雅处理所有异常情况
+- **访问控制**: 可配置的访问权限
+
+## 🐛 故障排除
+
+### 常见问题
+
+1. **串口连接失败**
+   - 检查串口是否被其他程序占用
+   - 确认串口参数配置正确
+   - 检查设备驱动是否正常
+
+2. **数据传输错误**
+   - 检查波特率设置是否匹配
+   - 确认数据位、停止位、校验位配置
+   - 检查串口线缆连接
+
+3. **Web界面无法访问**
+   - 确认服务器端口未被占用
+   - 检查防火墙设置
+   - 确认Node.js版本符合要求
+
+### 日志分析
+
+程序运行日志保存在 `logs/` 目录下：
+
+- `sync.log`: 主程序日志
+- `error.log`: 错误日志
+- `audit.log`: 安全审计日志
+
+## 🤝 贡献指南
+
+欢迎提交 Issue 和 Pull Request 来改进这个项目。
+
+### 开发环境设置
+
+```bash
+# 克隆项目
+git clone https://github.com/your-repo/serial-sync.git
+cd serial-sync
+
+# 安装依赖
+npm install
+
+# 启动开发模式
+npm run dev
+
+# 代码检查
+npm run lint
+
+# 代码格式化
+npm run format
+```
+
+## 📄 许可证
+
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+
+## 🙏 致谢
+
+- [SerialPort](https://serialport.io/) - 串口通信库
+- [Express](https://expressjs.com/) - Web框架
+- [Winston](https://github.com/winstonjs/winston) - 日志系统
+- [Config](https://github.com/lorenwest/node-config) - 配置管理
+
+## 📞 联系方式
+
+如有问题或建议，请通过以下方式联系：
+
+- 提交 Issue: [GitHub Issues](https://github.com/your-repo/serial-sync/issues)
+- 邮箱: your-email@example.com
+
+---
+
+**SerialSync** - 让串口通信更简单、更可靠！ 
