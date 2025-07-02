@@ -26,10 +26,12 @@ class SerialManager extends EventEmitter {
   /**
    * 连接串口
    */
-  async connect() {
+  async connect(portOverride) {
     try {
-      const serialConfig = config.get('serial');
-      
+      const serialConfig = { ...config.get('serial') };
+      if (portOverride) {
+        serialConfig.port = portOverride;
+      }
       this.port = new SerialPort({
         path: serialConfig.port,
         baudRate: serialConfig.baudRate,

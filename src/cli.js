@@ -1,28 +1,31 @@
 #!/usr/bin/env node
 
-const { SerialPort } = require('serialport');
-const readline = require('readline');
 const path = require('path');
-
-// 设置配置文件路径
 process.env.NODE_CONFIG_DIR = path.join(__dirname, '..', 'config');
-
+const readline = require('readline');
+const { SerialPort } = require('serialport');
+const SerialManager = require('./core/serial/SerialManager');
 const config = require('config');
-
-// 简化logger，避免配置文件依赖
-const simpleLogger = {
-    info: (msg) => console.log(`[INFO] ${msg}`),
-    error: (msg) => console.error(`[ERROR] ${msg}`),
-    warn: (msg) => console.warn(`[WARN] ${msg}`)
-};
+const { ReadlineParser } = require('@serialport/parser-readline');
 
 class SerialCLI {
     constructor() {
-        this.serialManager = null;
-        this.isConnected = false;
+        this.manager = new SerialManager();
         this.rl = readline.createInterface({
             input: process.stdin,
             output: process.stdout
+        });
+        this.manager.on('data', (data) => {
+            console.log(`接收: ${data}`);
+        });
+        this.manager.on('connected', () => {
+            console.log('✅ 串口连接成功');
+        });
+        this.manager.on('disconnected', () => {
+            console.log('🔌 串口已断开');
+        });
+        this.manager.on('error', (err) => {
+            console.error('串口错误:', err.message || err);
         });
     }
 
@@ -43,7 +46,6 @@ class SerialCLI {
         const parts = input.split(' ');
         const command = parts[0].toLowerCase();
         const args = parts.slice(1);
-
         try {
             switch (command) {
                 case 'list':
@@ -58,11 +60,11 @@ class SerialCLI {
                 case 'send':
                     await this.sendData(args.join(' '));
                     break;
+                case 'rawsend':
+                    await this.rawSendData(args.join(' '));
+                    break;
                 case 'status':
                     this.showStatus();
-                    break;
-                case 'config':
-                    this.showConfig();
                     break;
                 case 'help':
                     this.showHelp();
@@ -97,109 +99,80 @@ class SerialCLI {
         }
     }
 
-    async connect(portPath) {
-        if (!portPath) {
-            console.log('请指定串口路径，例如: connect COM3');
-            return;
-        }
-
-        console.log(`连接串口: ${portPath}`);
+    async connect(port) {
         try {
-            this.serialManager = new SerialPort({
-                path: portPath,
-                baudRate: config.get('serial.baudRate'),
-                dataBits: config.get('serial.dataBits'),
-                stopBits: config.get('serial.stopBits'),
-                parity: config.get('serial.parity')
-            });
-
-            await new Promise((resolve, reject) => {
-                this.serialManager.on('open', () => {
-                    this.isConnected = true;
-                    console.log(`连接成功: ${portPath}`);
-                    
-                    this.serialManager.on('data', (data) => {
-                        console.log(`接收: ${data.toString()}`);
-                    });
-
-                    resolve();
+            await this.manager.connect(port);
+            // 监听原始串口数据
+            if (this.manager.port) {
+                // 原始 buffer 监听
+                this.manager.port.on('data', (buf) => {
+                    console.log(`[原始接收] ${buf.toString()}`);
                 });
-
-                this.serialManager.on('error', reject);
-            });
-        } catch (error) {
-            console.error(`连接失败: ${error.message}`);
-            this.serialManager = null;
+                // 按\n分包监听
+                const parser = this.manager.port.pipe(new ReadlineParser({ delimiter: '\n' }));
+                parser.on('data', (line) => {
+                    console.log(`[分包接收] ${line}`);
+                });
+            }
+        } catch (e) {
+            console.error('连接失败:', e.message);
         }
     }
 
     async disconnect() {
-        if (!this.isConnected) {
-            console.log('当前未连接');
-            return;
-        }
-
-        this.serialManager.close();
-        this.isConnected = false;
-        this.serialManager = null;
-        console.log('已断开连接');
+        this.manager.disconnect();
     }
 
     async sendData(data) {
-        if (!this.isConnected) {
-            console.log('请先连接串口');
-            return;
-        }
-
         if (!data) {
             console.log('请输入要发送的数据');
             return;
         }
+        try {
+            await this.manager.sendData(data);
+            console.log('发送成功');
+        } catch (e) {
+            console.error('发送失败:', e.message);
+        }
+    }
 
-        this.serialManager.write(data);
-        console.log(`发送: ${data}`);
+    async rawSendData(data) {
+        if (!this.manager.isConnected || !this.manager.port) {
+            console.log('请先连接串口');
+            return;
+        }
+        if (!data) {
+            console.log('请输入要发送的数据');
+            return;
+        }
+        this.manager.port.write(data, (err) => {
+            if (err) {
+                console.error('原始数据发送失败:', err.message);
+            } else {
+                console.log('原始数据发送成功');
+            }
+        });
     }
 
     showStatus() {
-        console.log(`连接状态: ${this.isConnected ? '已连接' : '未连接'}`);
-        if (this.isConnected) {
-            console.log(`串口: ${this.serialManager.path}`);
-        }
-    }
-
-    showConfig() {
-        console.log('当前配置:');
-        console.log(`  默认串口: ${config.get('serial.port')}`);
-        console.log(`  波特率: ${config.get('serial.baudRate')}`);
-        console.log(`  数据位: ${config.get('serial.dataBits')}`);
-        console.log(`  停止位: ${config.get('serial.stopBits')}`);
-        console.log(`  校验位: ${config.get('serial.parity')}`);
+        const status = this.manager.getConnectionStatus();
+        console.log('连接状态:', status.isConnected ? '已连接' : '未连接');
+        console.log('串口:', status.port);
+        console.log('重连次数:', status.reconnectAttempts, '/', status.maxReconnectAttempts);
     }
 
     showHelp() {
-        console.log(`
-可用命令:
-  list                    - 列出可用串口
-  connect <port>          - 连接串口
-  disconnect              - 断开连接
-  send <data>             - 发送数据
-  status                  - 显示状态
-  config                  - 显示配置
-  help                    - 显示帮助
-  quit                    - 退出程序
-        `);
+        console.log(`\n可用命令:\n  list                      - 列出可用串口\n  connect [port]            - 连接串口（可指定端口）\n  disconnect                - 断开连接\n  send <data>               - 发送数据（走协议）\n  rawsend <data>            - 发送原始数据（无协议/无压缩）\n  status                    - 显示状态\n  help                      - 显示帮助\n  quit                      - 退出程序\n        `);
     }
 
     async quit() {
-        if (this.isConnected) {
-            await this.disconnect();
-        }
+        this.manager.disconnect();
         this.rl.close();
         process.exit(0);
     }
 
     showPrompt() {
-        const status = this.isConnected ? '✅' : '❌';
+        const status = this.manager.isConnected ? '✅' : '❌';
         process.stdout.write(`\n${status} serial-sync> `);
     }
 }
