@@ -152,3 +152,6 @@ sync-files/
 backups/
 config/local.json
 config/production.json 
+
+test_files/
+received_files/

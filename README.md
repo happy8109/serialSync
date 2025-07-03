@@ -312,7 +312,6 @@ SerialSync 需同时满足以下两大核心场景：
 ### 4. CLI命令设计原则
 
 - `send <data>`：协议化发送字符串，适合消息/聊天。
-- `rawsend <data>`：原始串口发送，兼容串口助手等第三方工具。
 - `sendfile <filepath>`：协议化分块发送文件，支持大文件、断点续传、进度显示。
 - `receivefile <savepath>`：接收文件并保存，支持进度显示。
 - `status`：显示当前传输状态、进度、错误等。
@@ -325,3 +324,107 @@ SerialSync 需同时满足以下两大核心场景：
 - **兼容性测试**：A端`rawsend hello`，B端用串口助手收到`hello`。
 
 > 本章节为后续协议实现、CLI开发和测试提供统一设计指导。
+
+## 文件分块传输开发与测试任务
+
+为完善SerialManager的文件同步能力，需重点推进sendfile/receivefile命令及分块协议的开发与测试。具体任务如下：
+
+### 1. 基础能力开发
+- sendfile命令：支持大文件分块、协议组包、ACK/重传、进度事件。
+- receivefile命令：支持分块重组、完整性校验、保存文件、进度事件。
+- SerialManager分块协议接口优化：如sendLargeData、handleChunk、事件分发等。
+
+### 2. 端到端大文件传输测试
+- 发送/接收大文件，校验内容一致性（如md5sum、diff等）。
+- 观察进度条、ACK、重传等机制是否健壮。
+
+### 3. 健壮性与极端场景测试
+- 断点续传、异常断开、丢包、粘包等场景。
+- 文件大小非分块整数倍、二进制/文本混合内容。
+
+### 4. 体验与易用性优化
+- 进度条、错误提示、文件名/大小显示等用户体验细节。
+
+> 以上任务将作为近期开发与测试的重点，确保SerialSync具备高可靠、高性能的文件同步能力。
+
+## 文件传输功能开发总结
+
+### 1. 协议设计
+
+#### 1.1 短包协议（send命令/消息/聊天）
+- 格式：[0xAA][LEN][DATA][CHECKSUM]
+  - 0xAA: 包头 (1字节)
+  - LEN: 数据长度 (1字节)
+  - DATA: 数据体 (LEN字节)
+  - CHECKSUM: 校验和 (1字节，对DATA所有字节累加和 & 0xFF)
+- 用于发送短文本、命令、聊天消息等。
+- 发送端：`SerialManager.sendData(data)`
+- 接收端：自动识别短包，emit 'data' 事件。
+
+#### 1.2 分块协议（sendfile命令/大文件）
+- 格式：[0xAA][TYPE][SEQ(2)][TOTAL(2)][LEN(2)][DATA][CHECKSUM]
+  - 0xAA: 包头 (1字节)
+  - TYPE: 包类型 (1字节，0x01=DATA, 0x02=ACK, 0x03=RETRY)
+  - SEQ: 当前块序号 (2字节)
+  - TOTAL: 总块数 (2字节)
+  - LEN: 数据长度 (2字节)
+  - DATA: 数据体 (LEN字节)
+  - CHECKSUM: 校验和 (1字节，对TYPE~LEN+DATA所有字节累加和 & 0xFF)
+- 用于大文件、二进制数据的可靠分块传输。
+- 发送端：`SerialManager.sendLargeData(data)`
+- 接收端：自动重组分块，emit 'file' 事件。
+
+### 2. 实现逻辑
+
+- `send` 命令：调用 `SerialManager.sendData(data)`，自动打包为短包协议，支持可选压缩。
+- `sendfile` 命令：调用 `SerialManager.sendLargeData(data)`，自动分块、打包为分块协议，每块数据发送后等待ACK，超时重试，最大重试次数由 `retryAttempts` 配置。支持整体压缩，分块大小由 `chunkSize` 配置。接收端自动拼包、重组、解压，emit 'file' 事件，支持丢包重传。
+
+### 3. 关键配置说明（config/default.json）
+- `sync.chunkSize`：分块大小，建议256~1024，视串口/虚拟串口实际能力调整。
+- `sync.timeout`：ACK超时时间（毫秒），建议500~2000。
+- `sync.retryAttempts`：每块最大重试次数，建议3~5。
+- `sync.compression`：是否启用压缩，true/false。
+
+### 4. 调用方法示例
+
+#### 4.1 发送短消息
+```js
+const SerialManager = require('./src/core/serial/SerialManager');
+const sm = new SerialManager();
+await sm.connect();
+sm.sendData('hello world');
+```
+
+#### 4.2 发送文件
+```js
+const fs = require('fs');
+const SerialManager = require('./src/core/serial/SerialManager');
+const sm = new SerialManager();
+await sm.connect();
+const fileBuf = fs.readFileSync('test.bin');
+await sm.sendLargeData(fileBuf);
+```
+
+#### 4.3 接收端监听
+```js
+sm.on('data', (msg) => {
+  // 短消息
+  console.log('收到消息:', msg.toString());
+});
+sm.on('file', (fileBuf) => {
+  // 大文件
+  fs.writeFileSync('received.bin', fileBuf);
+  console.log('收到文件，已保存');
+});
+```
+
+### 5. 经验与注意事项
+- 分块大小(chunkSize)过大，虚拟串口/serialport库可能丢包，建议小于1024。
+- 每次write后必须drain，确保串口缓冲区flush。
+- 超时时间(timeout)和重试次数(retryAttempts)需根据实际环境调整。
+- 发送端和接收端compression配置必须一致。
+- 支持自动重连、错误处理、进度事件等。
+
+---
+
+如需扩展协议、提升性能、支持更大文件或更高可靠性，可继续在此基础上开发。

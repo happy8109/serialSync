@@ -3,7 +3,7 @@
 const path = require('path');
 process.env.NODE_CONFIG_DIR = path.join(__dirname, '..', 'config');
 const readline = require('readline');
-const { SerialPort } = require('serialport');
+const SerialPort = require('serialport');
 const SerialManager = require('./core/serial/SerialManager');
 const config = require('config');
 const { ReadlineParser } = require('@serialport/parser-readline');
@@ -175,7 +175,7 @@ class SerialCLI {
     }
 
     /**
-     * 发送文件（分块协议）
+     * 发送文件（分块协议，支持大文件、进度、异常处理）
      */
     async sendFile(filepath) {
         const fs = require('fs');
@@ -188,29 +188,31 @@ class SerialCLI {
             return;
         }
         try {
+            const stat = fs.statSync(filepath);
+            const totalSize = stat.size;
             const data = fs.readFileSync(filepath);
-            let lastProgress = -1;
+            let lastPercent = -1;
             // 监听进度
             const onProgress = (info) => {
                 if (info.type === 'send' && info.total) {
                     const percent = Math.floor((info.seq + 1) / info.total * 100);
-                    if (percent !== lastProgress) {
-                        process.stdout.write(`\r发送进度: ${percent}%`);
-                        lastProgress = percent;
+                    if (percent !== lastPercent) {
+                        process.stdout.write(`\r发送进度: ${percent}% (${info.seq + 1}/${info.total})`);
+                        lastPercent = percent;
                     }
                 }
             };
             this.manager.on('progress', onProgress);
             await this.manager.sendLargeData(data);
             this.manager.removeListener('progress', onProgress);
-            console.log('\n文件发送完成');
+            console.log(`\n文件发送完成，总字节数: ${totalSize}`);
         } catch (e) {
             console.error('文件发送失败:', e.message);
         }
     }
 
     /**
-     * 接收文件并保存
+     * 接收文件并保存（分块协议，支持进度、校验）
      */
     async receiveFile(savepath) {
         const fs = require('fs');
@@ -225,15 +227,19 @@ class SerialCLI {
         // 只监听一次 file 事件
         const onFile = (buf) => {
             fs.writeFileSync(savepath, buf);
-            console.log(`文件已保存到: ${savepath}`);
+            console.log(`\n文件已保存到: ${savepath}，总字节数: ${buf.length}`);
             this.manager.removeListener('file', onFile);
         };
         this.manager.on('file', onFile);
         // 监听进度
+        let lastPercent = -1;
         const onProgress = (info) => {
             if (info.type === 'receive' && info.total) {
                 const percent = Math.floor((info.seq + 1) / info.total * 100);
-                process.stdout.write(`\r接收进度: ${percent}%`);
+                if (percent !== lastPercent) {
+                    process.stdout.write(`\r接收进度: ${percent}% (${info.seq + 1}/${info.total})`);
+                    lastPercent = percent;
+                }
             }
         };
         this.manager.on('progress', onProgress);

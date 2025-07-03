@@ -22,8 +22,8 @@
     "host": "localhost"
   },
   "sync": {
-    "chunkSize": 1024,
-    "timeout": 30000,
+    "chunkSize": 2048,
+    "timeout": 500,
     "retryAttempts": 3,
     "compression": true
   }

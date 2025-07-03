@@ -74,32 +74,38 @@ class SerialManager extends EventEmitter {
         // 拼包逻辑：按协议包头和长度收集
         this._recvBuffer = Buffer.concat([this._recvBuffer, chunk]);
         while (this._recvBuffer.length > 0) {
-          // 判断是否为分块包或短包
           if (this._recvBuffer[0] !== 0xAA) {
-            // 丢弃无效头
             this._recvBuffer = this._recvBuffer.slice(1);
             continue;
           }
-          let expectedLen = 0;
-          if (this._recvBuffer.length >= 2) {
-            if (this._recvBuffer.length >= 7 && (this._recvBuffer[1] === 0x01 || this._recvBuffer[1] === 0x02 || this._recvBuffer[1] === 0x03)) {
-              // 分块包 [0xAA][TYPE][SEQ][TOTAL][LEN][DATA][CHECKSUM]
-              const len = this._recvBuffer[4];
-              expectedLen = 6 + len;
-            } else {
-              // 短包 [0xAA][LEN][DATA][CHECKSUM]
-              const len = this._recvBuffer[1];
-              expectedLen = 3 + len;
-            }
-          } else {
-            break; // 还不够判断
+          // 优先判断分块包（TYPE=0x01/0x02/0x03，且长度>=8）
+          if (
+            this._recvBuffer.length >= 8 &&
+            (this._recvBuffer[1] === 0x01 || this._recvBuffer[1] === 0x02 || this._recvBuffer[1] === 0x03)
+          ) {
+            const len = this._recvBuffer.readUInt16BE(6);
+            const expectedLen = 8 + len + 1;
+            if (this._recvBuffer.length < expectedLen) break;
+            const onePacket = this._recvBuffer.slice(0, expectedLen);
+            this._recvBuffer = this._recvBuffer.slice(expectedLen);
+            this.handleDataReceived(onePacket);
+            continue;
           }
-          if (this._recvBuffer.length < expectedLen) break; // 包还没收全
-          const onePacket = this._recvBuffer.slice(0, expectedLen);
-          this._recvBuffer = this._recvBuffer.slice(expectedLen);
-          // 调试日志
-          console.log('[DEBUG] handleDataReceived 收到完整包:', onePacket.toString('hex'), '长度:', onePacket.length);
-          this.handleDataReceived(onePacket);
+          // 再判断短包（LEN不能太大，防止误判）
+          if (this._recvBuffer.length >= 2) {
+            const len = this._recvBuffer[1];
+            if (len > 200) { // 防止误判
+              this._recvBuffer = this._recvBuffer.slice(1);
+              continue;
+            }
+            const expectedLen = 3 + len;
+            if (this._recvBuffer.length < expectedLen) break;
+            const onePacket = this._recvBuffer.slice(0, expectedLen);
+            this._recvBuffer = this._recvBuffer.slice(expectedLen);
+            this.handleDataReceived(onePacket);
+            continue;
+          }
+          break;
         }
       });
 
@@ -160,8 +166,6 @@ class SerialManager extends EventEmitter {
         buf = zlib.deflateSync(buf);
       }
       const packet = this.packData(buf);
-      // 调试日志
-      console.log('[DEBUG] 已写入串口:', packet.toString('hex'), '长度:', packet.length);
       this.port.write(packet, (err) => {
         if (err) {
           logger.error('数据发送失败:', err);
@@ -195,8 +199,21 @@ class SerialManager extends EventEmitter {
         } else if (chunk.type === PKG_TYPE.RETRY) {
           // 可扩展：重传逻辑
         }
+        // 分块包（无论类型）都直接 return
         return;
       }
+    }
+    // 新增：ACK/RETRY 包长度为5，且第二字节为0x02/0x03，直接 return
+    if (
+      buf.length === 5 &&
+      buf[0] === 0xAA &&
+      (buf[1] === PKG_TYPE.ACK || buf[1] === PKG_TYPE.RETRY)
+    ) {
+      if (buf[1] === PKG_TYPE.ACK) {
+        this.emit('ack', buf[2]);
+      }
+      // 这是 ACK 或 RETRY 包，直接 return
+      return;
     }
     // 否则尝试短包协议
     const { data: unpacked, valid } = this.unpackData(buf);
@@ -234,10 +251,11 @@ class SerialManager extends EventEmitter {
       const bufs = [];
       for (let i = 0; i < this._recvTotal; i++) bufs.push(this._recvChunks[i]);
       let all = Buffer.concat(bufs);
+      // 只在全部重组后整体解压
       if (this.compression) {
         try { all = zlib.inflateSync(all); } catch (e) { logger.warn('解压失败', e); }
       }
-      this.emit('file', all); // emit file事件
+      this.emit('file', all);
       this._recvChunks = null;
       this._recvTotal = null;
     }
@@ -374,15 +392,17 @@ class SerialManager extends EventEmitter {
   async sendLargeData(data) {
     if (!this.isConnected) throw new Error('串口未连接');
     let buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    if (this.compression) buf = zlib.deflateSync(buf);
-    const chunkSize = 32; // 单块最大数据长度
+    // 整体压缩
+    if (this.compression) {
+      buf = zlib.deflateSync(buf);
+    }
+    const chunkSize = this.chunkSize || 256; // 从配置读取chunkSize，默认256
     const total = Math.ceil(buf.length / chunkSize);
     for (let seq = 0; seq < total; seq++) {
       const chunk = buf.slice(seq * chunkSize, (seq + 1) * chunkSize);
-      const packet = this.packChunk(PKG_TYPE.DATA, seq, total, chunk);
       let retries = 0;
       while (retries < this.retryAttempts) {
-        await this._writePacket(packet);
+        await this._writePacket(this.packChunk(PKG_TYPE.DATA, seq, total, chunk));
         const ack = await this._waitForAck(seq, this.timeout);
         if (ack) break;
         retries++;
@@ -399,7 +419,11 @@ class SerialManager extends EventEmitter {
   _writePacket(packet) {
     return new Promise((resolve, reject) => {
       this.port.write(packet, (err) => {
-        if (err) reject(err); else resolve();
+        if (err) reject(err);
+        else this.port.drain((err2) => {
+          if (err2) reject(err2);
+          else resolve();
+        });
       });
     });
   }
@@ -429,23 +453,33 @@ class SerialManager extends EventEmitter {
    */
   packChunk(type, seq, total, data) {
     const len = data.length;
-    const header = Buffer.from([0xAA, type, seq, total, len]);
+    // header应为8字节
+    const header = Buffer.alloc(8);
+    header[0] = 0xAA;
+    header[1] = type;
+    header.writeUInt16BE(seq, 2);    // seq: 2字节
+    header.writeUInt16BE(total, 4);  // total: 2字节
+    header.writeUInt16BE(len, 6);    // len: 2字节
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const sum = [...header.slice(1), ...body].reduce((a, b) => (a + b) & 0xFF, 0);
-    return Buffer.concat([header, body, Buffer.from([sum])]);
+    const sum = [...header.slice(1, 8), ...body].reduce((a, b) => (a + b) & 0xFF, 0);
+    const packet = Buffer.concat([header, body, Buffer.from([sum])]);
+    return packet;
   }
 
   /**
    * 解包（分块协议包）
    */
   unpackChunk(buf) {
-    if (buf.length < 7) return null;
+    if (buf.length < 9) return null;
     if (buf[0] !== 0xAA) return null;
-    const type = buf[1], seq = buf[2], total = buf[3], len = buf[4];
-    if (buf.length !== 6 + len) return null;
-    const data = buf.slice(5, 5 + len);
-    const checksum = buf[5 + len];
-    const sum = [...buf.slice(1, 5 + len)].reduce((a, b) => (a + b) & 0xFF, 0);
+    const type = buf[1];
+    const seq = buf.readUInt16BE(2);
+    const total = buf.readUInt16BE(4);
+    const len = buf.readUInt16BE(6);
+    if (buf.length !== 8 + len + 1) return null;
+    const data = buf.slice(8, 8 + len);
+    const checksum = buf[8 + len];
+    const sum = [...buf.slice(1, 8), ...data].reduce((a, b) => (a + b) & 0xFF, 0);
     if (checksum !== sum) return null;
     return { type, seq, total, data };
   }
