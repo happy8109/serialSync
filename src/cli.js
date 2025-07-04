@@ -78,6 +78,15 @@ class SerialCLI {
                 case 'sendlarge':
                     await this.sendLargeData(args.join(' '));
                     break;
+                case 'sendfile':
+                    await this.sendFile(args[0]);
+                    break;
+                case 'receivefile':
+                    await this.receiveFile(args[0]);
+                    break;
+                case 'autospeed':
+                    await this.autoSpeedTest(args[0]);
+                    break;
                 case 'status':
                     this.showStatus();
                     break;
@@ -86,12 +95,6 @@ class SerialCLI {
                     break;
                 case 'quit':
                     await this.quit();
-                    break;
-                case 'sendfile':
-                    await this.sendFile(args[0]);
-                    break;
-                case 'receivefile':
-                    await this.receiveFile(args[0]);
                     break;
                 default:
                     if (command) console.log(`未知命令: ${command}`);
@@ -275,7 +278,7 @@ class SerialCLI {
     }
 
     showHelp() {
-        console.log(`\n可用命令:\n  list                      - 列出可用串口\n  connect [port]            - 连接串口（可指定端口）\n  disconnect                - 断开连接\n  send <data>               - 发送数据（走协议）\n  sendlarge <data>          - 分块协议发送大数据（协议分块/ACK/重传）\n  sendfile <filepath>       - 发送文件（分块协议/大文件/进度）\n  receivefile <savepath>    - 接收文件并保存（分块协议/进度）\n  status                    - 显示状态\n  help                      - 显示帮助\n  quit                      - 退出程序\n        `);
+        console.log(`\n可用命令:\n  list                      - 列出可用串口\n  connect [port]            - 连接串口（可指定端口）\n  disconnect                - 断开连接\n  send <data>               - 发送数据（走协议）\n  sendlarge <data>          - 分块协议发送大数据（协议分块/ACK/重传）\n  sendfile <filepath>       - 发送文件（分块协议/大文件/进度）\n  receivefile <savepath>    - 接收文件并保存（分块协议/进度）\n  autospeed <filepath>      - 自动测速多种chunkSize，输出对比表\n  status                    - 显示状态\n  help                      - 显示帮助\n  quit                      - 退出程序\n        `);
     }
 
     async quit() {
@@ -287,6 +290,62 @@ class SerialCLI {
     showPrompt() {
         const status = this.manager.isConnected ? '✅' : '❌';
         process.stdout.write(`\n${status} serial-sync> `);
+    }
+
+    /**
+     * 自动测速命令：循环多种chunkSize，发送同一文件，统计速率/丢块/重试
+     * 用法：autospeed <filepath>
+     */
+    async autoSpeedTest(filepath) {
+        const fs = require('fs');
+        if (!filepath) {
+            console.log('请输入要测速的文件路径');
+            return;
+        }
+        if (!this.manager.isConnected) {
+            console.log('请先连接串口');
+            return;
+        }
+        const sizes = [128, 256, 512, 1024, 2048, 4096];
+        const stat = fs.statSync(filepath);
+        const totalSize = stat.size;
+        const data = fs.readFileSync(filepath);
+        const origChunkSize = this.manager.chunkSize;
+        for (const chunkSize of sizes) {
+            this.manager.chunkSize = chunkSize;
+            let lastPercent = -1;
+            let lastProgress = null;
+            let hadProgress = false;
+            const onProgress = (info) => {
+                if (info.type === 'send' && info.total) {
+                    if (info.percent !== lastPercent) {
+                        process.stdout.write(`\r[${chunkSize}] 进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)} 丢块: ${info.lostBlocks} 总重试: ${info.totalRetries}`);
+                        lastPercent = info.percent;
+                        hadProgress = true;
+                    }
+                    lastProgress = info;
+                }
+            };
+            this.manager.on('progress', onProgress);
+            let error = null;
+            try {
+                await this.manager.sendLargeData(data);
+            } catch (e) {
+                error = e.message;
+            }
+            this.manager.removeListener('progress', onProgress);
+            if (hadProgress) process.stdout.write('\n');
+            if (error) {
+                let friendly = error;
+                if (/out of range/.test(error) && chunkSize === 128) {
+                    friendly = '分块数过多，128字节分块不被支持';
+                } else if (/块0发送失败/.test(error)) {
+                    friendly = '分块过大，链路/协议不支持';
+                }
+                console.log(`[${chunkSize}] 发送失败: ${friendly}`);
+            }
+        }
+        this.manager.chunkSize = origChunkSize;
     }
 }
 
