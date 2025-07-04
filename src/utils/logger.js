@@ -2,6 +2,7 @@ const winston = require('winston');
 const path = require('path');
 const config = require('config');
 const fs = require('fs');
+const { createLogger, format, transports } = require('winston');
 
 // 创建日志目录
 const logDir = path.dirname(config.get('logging.file'));
@@ -16,12 +17,12 @@ const logFormat = winston.format.combine(
   winston.format.json()
 );
 
-const logger = winston.createLogger({
+const logger = createLogger({
   level: config.get('logging.level'),
   format: logFormat,
   defaultMeta: { service: 'serial-sync' },
   transports: [
-    new winston.transports.File({
+    new transports.File({
       filename: config.get('logging.file'),
       maxsize: config.get('logging.maxSize'),
       maxFiles: config.get('logging.maxFiles'),
@@ -30,23 +31,25 @@ const logger = winston.createLogger({
         winston.format.json()
       )
     }),
-    new winston.transports.File({
+    new transports.File({
       filename: path.join(logDir, 'error.log'),
       level: 'error',
       maxsize: config.get('logging.maxSize'),
       maxFiles: config.get('logging.maxFiles')
+    }),
+    new transports.Console({
+      level: 'warn',
+      format: format.combine(
+        format((info) => {
+          if (info.onlyFile) return false; // 只写文件，不输出到console
+          return info;
+        })(),
+        format.colorize(),
+        format.simple()
+      )
     })
   ]
 });
-
-if (process.env.NODE_ENV !== 'production') {
-  logger.add(new winston.transports.Console({
-    format: winston.format.combine(
-      winston.format.colorize(),
-      winston.format.simple()
-    )
-  }));
-}
 
 const auditLogger = winston.createLogger({
   level: 'info',

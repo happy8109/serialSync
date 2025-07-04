@@ -29,6 +29,21 @@ class SerialCLI {
         });
     }
 
+    /**
+     * 格式化速率显示
+     * @param {number} bytesPerSecond - 字节/秒
+     * @returns {string} 格式化后的速率字符串
+     */
+    formatSpeed(bytesPerSecond) {
+        if (bytesPerSecond >= 1024 * 1024) {
+            return `${(bytesPerSecond / (1024 * 1024)).toFixed(2)}MB/s`;
+        } else if (bytesPerSecond >= 1024) {
+            return `${(bytesPerSecond / 1024).toFixed(2)}KB/s`;
+        } else {
+            return `${bytesPerSecond}B/s`;
+        }
+    }
+
     async start() {
         console.log('SerialSync CLI v1.0.0 - 串口通信命令行工具');
         console.log('输入 "help" 查看可用命令');
@@ -62,9 +77,6 @@ class SerialCLI {
                     break;
                 case 'sendlarge':
                     await this.sendLargeData(args.join(' '));
-                    break;
-                case 'rawsend':
-                    await this.rawSendData(args.join(' '));
                     break;
                 case 'status':
                     this.showStatus();
@@ -127,7 +139,7 @@ class SerialCLI {
     }
 
     async disconnect() {
-        this.manager.disconnect();
+        await this.manager.disconnect();
     }
 
     async sendData(data) {
@@ -195,16 +207,16 @@ class SerialCLI {
             // 监听进度
             const onProgress = (info) => {
                 if (info.type === 'send' && info.total) {
-                    const percent = Math.floor((info.seq + 1) / info.total * 100);
-                    if (percent !== lastPercent) {
-                        process.stdout.write(`\r发送进度: ${percent}% (${info.seq + 1}/${info.total})`);
-                        lastPercent = percent;
+                    if (info.percent !== lastPercent) {
+                        process.stdout.write(`\r发送进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)} 丢块: ${info.lostBlocks} 总重试: ${info.totalRetries}`);
+                        lastPercent = info.percent;
                     }
                 }
             };
             this.manager.on('progress', onProgress);
             await this.manager.sendLargeData(data);
             this.manager.removeListener('progress', onProgress);
+            // 只输出完成提示，不再输出任何统计或总结行
             console.log(`\n文件发送完成，总字节数: ${totalSize}`);
         } catch (e) {
             console.error('文件发送失败:', e.message);
@@ -235,10 +247,9 @@ class SerialCLI {
         let lastPercent = -1;
         const onProgress = (info) => {
             if (info.type === 'receive' && info.total) {
-                const percent = Math.floor((info.seq + 1) / info.total * 100);
-                if (percent !== lastPercent) {
-                    process.stdout.write(`\r接收进度: ${percent}% (${info.seq + 1}/${info.total})`);
-                    lastPercent = percent;
+                if (info.percent !== lastPercent) {
+                    process.stdout.write(`\r接收进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)}`);
+                    lastPercent = info.percent;
                 }
             }
         };
@@ -251,10 +262,20 @@ class SerialCLI {
         console.log('连接状态:', status.isConnected ? '已连接' : '未连接');
         console.log('串口:', status.port);
         console.log('重连次数:', status.reconnectAttempts, '/', status.maxReconnectAttempts);
+        if (status.lastActive) {
+            const date = new Date(status.lastActive);
+            console.log('最后活跃:', date.toLocaleString());
+        }
+        if (status.currentTask) {
+            console.log('当前任务:', status.currentTask);
+        }
+        if (status.speed) {
+            console.log('当前速率:', this.formatSpeed(status.speed));
+        }
     }
 
     showHelp() {
-        console.log(`\n可用命令:\n  list                      - 列出可用串口\n  connect [port]            - 连接串口（可指定端口）\n  disconnect                - 断开连接\n  send <data>               - 发送数据（走协议）\n  sendlarge <data>          - 分块协议发送大数据（协议分块/ACK/重传）\n  sendfile <filepath>       - 发送文件（分块协议/大文件/进度）\n  receivefile <savepath>    - 接收文件并保存（分块协议/进度）\n  rawsend <data>            - 发送原始数据（无协议/无压缩）\n  status                    - 显示状态\n  help                      - 显示帮助\n  quit                      - 退出程序\n        `);
+        console.log(`\n可用命令:\n  list                      - 列出可用串口\n  connect [port]            - 连接串口（可指定端口）\n  disconnect                - 断开连接\n  send <data>               - 发送数据（走协议）\n  sendlarge <data>          - 分块协议发送大数据（协议分块/ACK/重传）\n  sendfile <filepath>       - 发送文件（分块协议/大文件/进度）\n  receivefile <savepath>    - 接收文件并保存（分块协议/进度）\n  status                    - 显示状态\n  help                      - 显示帮助\n  quit                      - 退出程序\n        `);
     }
 
     async quit() {

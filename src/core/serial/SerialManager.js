@@ -32,6 +32,29 @@ const PKG_TYPE = { DATA: 0x01, ACK: 0x02, RETRY: 0x03 };
  * - 'error'：异常
  */
 
+/**
+ * SerialManager 串口通信管理器
+ *
+ * 主要API：
+ * - async connect(portOverride): 连接串口
+ * - disconnect(): 断开串口
+ * - getConnectionStatus(): 获取连接状态
+ * - async sendData(data): 发送短消息
+ * - async sendLargeData(buffer): 发送大文件
+ * - on('data', fn): 收到短消息事件
+ * - on('file', fn): 收到完整文件事件
+ * - on('progress', fn): 文件分块进度
+ * - on('error', fn): 错误事件
+ * - on('connected'/'disconnected', fn): 连接状态变化
+ *
+ * 事件说明：
+ * @event data        收到短消息（Buffer）
+ * @event file        收到完整文件（Buffer）
+ * @event progress    文件分块进度 {type, seq, total}
+ * @event error       错误事件（Error）
+ * @event connected   串口已连接
+ * @event disconnected串口已断开
+ */
 class SerialManager extends EventEmitter {
   constructor() {
     super();
@@ -52,6 +75,9 @@ class SerialManager extends EventEmitter {
 
   /**
    * 连接串口
+   * @param {string} [portOverride] - 可选，覆盖默认串口端口
+   * @returns {Promise<void>} 连接成功时resolve，否则reject
+   * @throws {Error} 连接失败时抛出
    */
   async connect(portOverride) {
     try {
@@ -154,11 +180,14 @@ class SerialManager extends EventEmitter {
   }
 
   /**
-   * 发送数据（协议包裹）
+   * 发送短消息/字符串
+   * @param {string|Buffer} data - 要发送的数据
+   * @returns {Promise<void>} 发送成功resolve，失败reject
+   * @throws {Error} 串口未连接或发送异常
    */
   async sendData(data) {
     if (!this.isConnected) {
-      throw new Error('串口未连接');
+      return Promise.reject(new Error('串口未连接'));
     }
     try {
       let buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
@@ -166,18 +195,22 @@ class SerialManager extends EventEmitter {
         buf = zlib.deflateSync(buf);
       }
       const packet = this.packData(buf);
-      this.port.write(packet, (err) => {
-        if (err) {
-          logger.error('数据发送失败:', err);
-          this.emit('error', err);
-        } else {
-          logger.info(`数据发送成功: ${buf.length} 字节`);
-          auditLogger.info('数据发送成功', { size: buf.length });
-        }
+      return new Promise((resolve, reject) => {
+        this.port.write(packet, (err) => {
+          if (err) {
+            logger.error('数据发送失败:', err);
+            this.emit('error', err);
+            reject(err);
+          } else {
+            logger.info(`数据发送成功: ${buf.length} 字节`);
+            auditLogger.info('数据发送成功', { size: buf.length });
+            resolve();
+          }
+        });
       });
     } catch (error) {
       logger.error('数据发送异常:', error);
-      throw error;
+      return Promise.reject(error);
     }
   }
 
@@ -241,23 +274,35 @@ class SerialManager extends EventEmitter {
     if (!this._recvChunks) this._recvChunks = {};
     if (!this._recvTotal) this._recvTotal = chunk.total;
     this._recvChunks[chunk.seq] = chunk.data;
+    // 进度细化
+    const received = Object.keys(this._recvChunks).length;
+    const percent = Math.round((received / this._recvTotal) * 100);
+    const now = Date.now();
+    if (!this._recvStartTime) this._recvStartTime = now;
+    const elapsed = (now - this._recvStartTime) / 1000;
+    const bytes = Object.values(this._recvChunks).reduce((a, b) => a + b.length, 0);
+    const speed = elapsed > 0 ? Math.round(bytes / elapsed) : 0;
+    const eta = speed > 0 ? Math.round((bytes * (this._recvTotal - received)) / speed) : 0;
     this.emit('progress', {
       type: 'receive',
       seq: chunk.seq,
-      total: this._recvTotal
+      total: this._recvTotal,
+      percent,
+      speed,
+      eta
     });
     // 全部收到
-    if (Object.keys(this._recvChunks).length === this._recvTotal) {
+    if (received === this._recvTotal) {
       const bufs = [];
       for (let i = 0; i < this._recvTotal; i++) bufs.push(this._recvChunks[i]);
       let all = Buffer.concat(bufs);
-      // 只在全部重组后整体解压
       if (this.compression) {
         try { all = zlib.inflateSync(all); } catch (e) { logger.warn('解压失败', e); }
       }
       this.emit('file', all);
       this._recvChunks = null;
       this._recvTotal = null;
+      this._recvStartTime = null;
     }
   }
 
@@ -308,36 +353,47 @@ class SerialManager extends EventEmitter {
   }
 
   /**
-   * 断开连接
+   * 断开串口连接
+   * @returns {Promise<void>} 断开成功resolve，失败reject
    */
   disconnect() {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    if (this.port && this.isConnected) {
-      this.port.close((error) => {
-        if (error) {
-          logger.error('断开连接错误:', error);
-        } else {
-          logger.info('串口连接已断开');
-          this.isConnected = false;
-          this.emit('disconnected');
-        }
-      });
-    }
+    return new Promise((resolve, reject) => {
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      if (this.port && this.isConnected) {
+        this.port.close((error) => {
+          if (error) {
+            logger.error('断开连接错误:', error);
+            reject(error);
+          } else {
+            logger.info('串口连接已断开');
+            this.isConnected = false;
+            this.emit('disconnected');
+            resolve();
+          }
+        });
+      } else {
+        resolve();
+      }
+    });
   }
 
   /**
-   * 获取连接状态
+   * 获取当前连接状态
+   * @returns {{isConnected: boolean, port: string, reconnectAttempts: number, maxReconnectAttempts: number, lastActive?: number, currentTask?: string, speed?: number}}
    */
   getConnectionStatus() {
     return {
       isConnected: this.isConnected,
       port: config.get('serial.port'),
       reconnectAttempts: this.reconnectAttempts,
-      maxReconnectAttempts: this.maxReconnectAttempts
+      maxReconnectAttempts: this.maxReconnectAttempts,
+      // 可选扩展
+      lastActive: this._lastActive || Date.now(),
+      currentTask: this._currentTask || '',
+      speed: this._currentSpeed || 0
     };
   }
 
@@ -387,17 +443,24 @@ class SerialManager extends EventEmitter {
   }
 
   /**
-   * 分块发送大数据，带ACK/重传
+   * 发送大文件/二进制数据（分块协议，带ACK/重传）
+   * @param {Buffer} data - 要发送的完整文件数据
+   * @returns {Promise<void>} 全部发送成功resolve，失败reject
+   * @throws {Error} 发送失败（如重试用尽）
+   * @emits progress {type: 'send', seq, total, percent, speed, retries, totalRetries, lostBlocks}
    */
   async sendLargeData(data) {
-    if (!this.isConnected) throw new Error('串口未连接');
+    if (!this.isConnected) return Promise.reject(new Error('串口未连接'));
     let buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    // 整体压缩
     if (this.compression) {
       buf = zlib.deflateSync(buf);
     }
-    const chunkSize = this.chunkSize || 256; // 从配置读取chunkSize，默认256
+    const chunkSize = this.chunkSize || 256;
     const total = Math.ceil(buf.length / chunkSize);
+    let startTime = Date.now();
+    let sentBytes = 0;
+    let totalRetries = 0;
+    let lostBlocks = 0;
     for (let seq = 0; seq < total; seq++) {
       const chunk = buf.slice(seq * chunkSize, (seq + 1) * chunkSize);
       let retries = 0;
@@ -406,11 +469,34 @@ class SerialManager extends EventEmitter {
         const ack = await this._waitForAck(seq, this.timeout);
         if (ack) break;
         retries++;
-        logger.warn(`块${seq}未收到ACK，重试${retries}`);
+        // 只写入日志文件，不在控制台输出
+        if (logger && typeof logger.warn === 'function') {
+          logger.warn(`块${seq}未收到ACK，重试${retries}`, { onlyFile: true });
+        }
       }
-      if (retries === this.retryAttempts) throw new Error(`块${seq}发送失败`);
+      if (retries === this.retryAttempts) return Promise.reject(new Error(`块${seq}发送失败`));
+      sentBytes += chunk.length;
+      totalRetries += retries;
+      if (retries > 0) lostBlocks++;
+      const now = Date.now();
+      const elapsed = (now - startTime) / 1000;
+      const speed = elapsed > 0 ? Math.round(sentBytes / elapsed) : 0;
+      const percent = Math.round(((seq + 1) / total) * 100);
+      this.emit('progress', {
+        type: 'send',
+        seq,
+        total,
+        percent,
+        speed, // B/s
+        retries, // 当前块重试
+        totalRetries, // 累计重试
+        lostBlocks // 累计丢块
+      });
     }
+    // 发送完成后，确保info日志单独成行，避免与进度行混合
+    //console.log('');
     logger.info('所有数据块发送完成');
+    return Promise.resolve();
   }
 
   /**

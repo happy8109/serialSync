@@ -23,7 +23,7 @@
   },
   "sync": {
     "chunkSize": 2048,
-    "timeout": 500,
+    "timeout": 200,
     "retryAttempts": 3,
     "compression": true
   }
