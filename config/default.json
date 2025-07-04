@@ -25,6 +25,7 @@
     "chunkSize": 2048,
     "timeout": 200,
     "retryAttempts": 3,
-    "compression": true
+    "compression": true,
+    "fileRecvDir": "./received_files"
   }
 } 
