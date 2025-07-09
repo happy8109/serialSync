@@ -61,17 +61,14 @@ class SerialManager extends EventEmitter {
     this.port = null;
     this.parser = null;
     this.isConnected = false;
-    this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = config.get('serial.maxReconnectAttempts');
-    this.reconnectInterval = config.get('serial.reconnectInterval');
-    this.autoReconnect = config.get('serial.autoReconnect');
-    this.reconnectTimer = null;
     this.dataBuffer = Buffer.alloc(0);
     this.chunkSize = config.get('sync.chunkSize');
     this.timeout = config.get('sync.timeout');
     this.retryAttempts = config.get('sync.retryAttempts');
     this.compression = config.get('sync.compression');
     this._fileSessions = {}; // { reqId: { meta, savePath, chunks: {}, total, startTime } }
+    this._userPort = null; // 记住用户指定端口
+    this._currentPort = null; // 记录当前实际连接端口
   }
 
   /**
@@ -85,6 +82,9 @@ class SerialManager extends EventEmitter {
       const serialConfig = { ...config.get('serial') };
       if (portOverride) {
         serialConfig.port = portOverride;
+        this._userPort = portOverride; // 记住用户指定端口
+      } else if (this._userPort) {
+        serialConfig.port = this._userPort; // 自动重连时优先用用户端口
       }
       this.port = new SerialPort({
         path: serialConfig.port,
@@ -163,7 +163,7 @@ class SerialManager extends EventEmitter {
       return new Promise((resolve, reject) => {
         this.port.on('open', () => {
           this.isConnected = true;
-          this.reconnectAttempts = 0;
+          this._currentPort = serialConfig.port;
           this.emit('connected');
           resolve();
         });
@@ -187,11 +187,8 @@ class SerialManager extends EventEmitter {
   setupEventListeners() {
     this.port.on('close', () => {
       this.isConnected = false;
-      logger.warn('串口连接已关闭');
+      // logger.warn('串口连接已关闭'); // 删除终端 warn 输出
       this.emit('disconnected');
-      if (this.autoReconnect && this.reconnectAttempts < this.maxReconnectAttempts) {
-        this.scheduleReconnect();
-      }
     });
     this.port.on('error', (error) => {
       logger.error('串口错误:', error);
@@ -507,34 +504,12 @@ class SerialManager extends EventEmitter {
   }
 
   /**
-   * 安排重连
-   */
-  scheduleReconnect() {
-    this.reconnectAttempts++;
-    logger.info(`安排重连 ${this.reconnectAttempts}/${this.maxReconnectAttempts}`);
-    
-    this.reconnectTimer = setTimeout(async () => {
-      try {
-        await this.connect();
-      } catch (error) {
-        logger.error('重连失败:', error);
-        if (this.reconnectAttempts < this.maxReconnectAttempts) {
-          this.scheduleReconnect();
-        }
-      }
-    }, this.reconnectInterval);
-  }
-
-  /**
    * 断开串口连接
+   * @param {boolean} isManual - 是否为手动断开，手动断开时临时关闭自动重连
    * @returns {Promise<void>} 断开成功resolve，失败reject
    */
-  disconnect() {
+  disconnect(isManual = false) {
     return new Promise((resolve, reject) => {
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
     if (this.port && this.isConnected) {
       this.port.close((error) => {
         if (error) {
@@ -544,7 +519,8 @@ class SerialManager extends EventEmitter {
           logger.info('串口连接已断开');
           this.isConnected = false;
           this.emit('disconnected');
-            resolve();
+          // 不再自动重连，由上层业务决定
+          resolve();
         }
       });
       } else {
@@ -560,9 +536,7 @@ class SerialManager extends EventEmitter {
   getConnectionStatus() {
     return {
       isConnected: this.isConnected,
-      port: config.get('serial.port'),
-      reconnectAttempts: this.reconnectAttempts,
-      maxReconnectAttempts: this.maxReconnectAttempts,
+      port: this._currentPort,
       // 可选扩展
       lastActive: this._lastActive || Date.now(),
       currentTask: this._currentTask || '',

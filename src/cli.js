@@ -18,11 +18,17 @@ class SerialCLI {
         this.manager.on('data', (data) => {
             console.log(`接收: ${data.toString('utf8')}`);
         });
-        this.manager.on('connected', () => {
-            console.log('✅ 串口连接成功');
-        });
         this.manager.on('disconnected', () => {
-            console.log('🔌 串口已断开');
+            if (!this._disconnectedPrinted) {
+                const status = this.manager.getConnectionStatus();
+                console.log(`🔌 串口已断开: ${status.port}`);
+                this._disconnectedPrinted = true;
+            }
+        });
+        this.manager.on('connected', () => {
+            this._disconnectedPrinted = false;
+            const status = this.manager.getConnectionStatus();
+            console.log(`✅ 串口连接成功: ${status.port}`);
         });
         this.manager.on('error', (err) => {
             console.error('串口错误:', err.message || err);
@@ -286,7 +292,6 @@ class SerialCLI {
         const status = this.manager.getConnectionStatus();
         console.log('连接状态:', status.isConnected ? '已连接' : '未连接');
         console.log('串口:', status.port);
-        console.log('重连次数:', status.reconnectAttempts, '/', status.maxReconnectAttempts);
         if (status.lastActive) {
             const date = new Date(status.lastActive);
             console.log('最后活跃:', date.toLocaleString());
@@ -331,8 +336,8 @@ class SerialCLI {
         const sizes = [128, 256, 512, 1024, 2048, 4096];
         const stat = fs.statSync(filepath);
         const totalSize = stat.size;
-        const data = fs.readFileSync(filepath);
         const origChunkSize = this.manager.chunkSize;
+        const path = require('path');
         for (const chunkSize of sizes) {
             this.manager.chunkSize = chunkSize;
             let lastPercent = -1;
@@ -350,8 +355,9 @@ class SerialCLI {
             };
             this.manager.on('progress', onProgress);
             let error = null;
+            const meta = { name: path.basename(filepath) };
             try {
-                await this.manager.sendLargeData(data);
+                await this.manager.sendFile(filepath, meta);
             } catch (e) {
                 error = e.message;
             }
