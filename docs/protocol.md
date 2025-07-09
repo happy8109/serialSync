@@ -1,5 +1,7 @@
 # 协议说明
 
+> 本项目核心目标：高效可靠的串口文字与文件同步，详见 architecture.md。
+
 ## 1. 短包协议（send命令/消息/聊天）
 - 格式：[0xAA][LEN][DATA][CHECKSUM]
   - 0xAA: 包头 (1字节)
@@ -34,14 +36,14 @@
 ## 4. 扩展协议设计与未来方向
 
 ### 4.1 扩展协议包类型与格式
-- **FILE_REQ (0x10)**：文件传输请求，包含文件名、大小、类型、是否需确认等元数据。
-  - 格式：[0xAA][0x10][REQ_ID][LEN][META][CHECKSUM]
+- **FILE_REQ (0x10)**：文件传输请求，包含文件名（当前仅传递文件名字符串，后续可扩展为JSON）。
+  - 格式：[0xAA][0x10][REQ_ID][LEN][FILENAME][CHECKSUM]
     - 0xAA: 包头 (1字节)
     - 0x10: 包类型 (1字节)
     - REQ_ID: 请求ID (1字节)
-    - LEN: META长度 (1字节)
-    - META: JSON字符串，包含文件名、大小、类型、建议保存路径等
-    - CHECKSUM: 校验和 (1字节，对TYPE~META所有字节累加和 & 0xFF)
+    - LEN: 文件名长度 (1字节)
+    - FILENAME: 文件名字符串（如 "test.txt"）
+    - CHECKSUM: 校验和 (1字节，对TYPE~FILENAME所有字节累加和 & 0xFF)
 
 - **FILE_ACCEPT (0x11)**：接收端同意接收。
   - 格式：[0xAA][0x11][REQ_ID][0][CHECKSUM]
@@ -89,10 +91,14 @@
 
 #### 【示例包】
 - 发送端发起请求：
-  `[0xAA][0x10][0x01][LEN][{"name":"test.txt","size":12345,"type":"txt"}][CHECKSUM]`
+  `[0xAA][0x10][0x01][06][74 65 73 74 2e 74 78 74][CHECKSUM]`  // "test.txt"
 - 接收端同意：
   `[0xAA][0x11][0x01][0][CHECKSUM]`
 - 接收端拒绝：
   `[0xAA][0x12][0x01][LEN]["空间不足"][CHECKSUM]`
 - 分块数据包：
-  `[0xAA][0x01][0x01][SEQ][TOTAL][LEN][DATA][CHECKSUM]` 
+  `[0xAA][0x01][0x01][SEQ][TOTAL][LEN][DATA][CHECKSUM]`
+
+---
+
+如需详细开发进度、接口说明，请查阅 docs/development-progress.md、docs/api.md。 

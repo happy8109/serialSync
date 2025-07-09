@@ -1,13 +1,14 @@
 # CLI用法
 
+> 本项目核心目标：高效可靠的串口文字与文件同步，详见 architecture.md。
+
 ## 主要命令
 
 - `list`：列出可用串口
 - `connect [port]`：连接串口（可指定端口）
 - `disconnect`：断开连接
-- `send <data>`：发送短消息
-- `sendfile <filepath>`：发送文件（分块协议/大文件/进度）
-- `receivefile <savepath>`：接收文件并保存（分块协议/进度）
+- `send <data>`：发送短消息（短包协议）
+- `sendfile <filepath>`：发送文件（分块/扩展协议，自动确认/元数据/进度）
 - `autospeed <filepath>`：自动测速多种chunkSize，输出对比
 - `status`：显示状态
 - `help`：显示帮助
@@ -22,15 +23,16 @@ connect COM3
 # 发送短消息
 send hello world
 
-# 发送文件
+# 发送文件（推荐，自动确认/自动保存）
 sendfile test.bin
-
-# 接收文件
-receivefile received.bin
 
 # 自动测速
 autospeed test.bin
 ```
+
+## 文件接收说明
+- **新版协议下，接收端无需手动输入 receivefile 命令，文件会自动保存到配置目录（由 config/sync.saveDir 决定），并输出保存路径。**
+- receivefile 命令仅用于兼容/调试场景，推荐使用自动接收。
 
 ## 进度与统计
 - 发送/接收文件时，终端实时显示进度、速率、丢块、重试等统计信息。
@@ -38,4 +40,4 @@ autospeed test.bin
 
 ---
 
-如需详细协议、接口等，请查阅 docs/ 目录下其他文档。 
+如需详细协议、接口、开发进度等，请查阅 docs/protocol.md、docs/development-progress.md。 

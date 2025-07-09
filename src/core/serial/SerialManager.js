@@ -17,7 +17,7 @@ const zlib = require('zlib');
  */
 
 // 包类型常量
-const PKG_TYPE = { DATA: 0x01, ACK: 0x02, RETRY: 0x03 };
+const PKG_TYPE = { DATA: 0x01, ACK: 0x02, RETRY: 0x03, FILE_REQ: 0x10, FILE_ACCEPT: 0x11, FILE_REJECT: 0x12 };
 
 /**
  * 串口协议说明：
@@ -71,6 +71,7 @@ class SerialManager extends EventEmitter {
     this.timeout = config.get('sync.timeout');
     this.retryAttempts = config.get('sync.retryAttempts');
     this.compression = config.get('sync.compression');
+    this._fileSessions = {}; // { reqId: { meta, savePath, chunks: {}, total, startTime } }
   }
 
   /**
@@ -104,14 +105,33 @@ class SerialManager extends EventEmitter {
             this._recvBuffer = this._recvBuffer.slice(1);
             continue;
           }
-          // 优先判断分块包（TYPE=0x01/0x02/0x03，且长度>=8）
+          // 优先判断 FILE_REQ/ACCEPT/REJECT 包
+          if (this._recvBuffer.length >= 4 && 
+              (this._recvBuffer[1] === PKG_TYPE.FILE_REQ || 
+               this._recvBuffer[1] === PKG_TYPE.FILE_ACCEPT || 
+               this._recvBuffer[1] === PKG_TYPE.FILE_REJECT)) {
+            const type = this._recvBuffer[1];
+            const reqId = this._recvBuffer[2];
+            const metaLen = this._recvBuffer[3];
+            const expectedLen = 4 + metaLen + 1;
+            if (this._recvBuffer.length < expectedLen) {
+              break;
+            }
+            const onePacket = this._recvBuffer.slice(0, expectedLen);
+            this._recvBuffer = this._recvBuffer.slice(expectedLen);
+            this.handleDataReceived(onePacket);
+            continue;
+          }
+          // 再判断分块包（TYPE=0x01/0x02/0x03，且长度>=9，带REQ_ID）
           if (
-            this._recvBuffer.length >= 8 &&
+            this._recvBuffer.length >= 9 &&
             (this._recvBuffer[1] === 0x01 || this._recvBuffer[1] === 0x02 || this._recvBuffer[1] === 0x03)
           ) {
-            const len = this._recvBuffer.readUInt16BE(6);
-            const expectedLen = 8 + len + 1;
-            if (this._recvBuffer.length < expectedLen) break;
+            const len = this._recvBuffer.readUInt16BE(7);
+            const expectedLen = 9 + len + 1;
+            if (this._recvBuffer.length < expectedLen) {
+              break;
+            }
             const onePacket = this._recvBuffer.slice(0, expectedLen);
             this._recvBuffer = this._recvBuffer.slice(expectedLen);
             this.handleDataReceived(onePacket);
@@ -119,16 +139,16 @@ class SerialManager extends EventEmitter {
           }
           // 再判断短包（LEN不能太大，防止误判）
           if (this._recvBuffer.length >= 2) {
-            const len = this._recvBuffer[1];
+              const len = this._recvBuffer[1];
             if (len > 200) { // 防止误判
               this._recvBuffer = this._recvBuffer.slice(1);
               continue;
             }
             const expectedLen = 3 + len;
             if (this._recvBuffer.length < expectedLen) break;
-            const onePacket = this._recvBuffer.slice(0, expectedLen);
-            this._recvBuffer = this._recvBuffer.slice(expectedLen);
-            this.handleDataReceived(onePacket);
+          const onePacket = this._recvBuffer.slice(0, expectedLen);
+          this._recvBuffer = this._recvBuffer.slice(expectedLen);
+          this.handleDataReceived(onePacket);
             continue;
           }
           break;
@@ -196,16 +216,16 @@ class SerialManager extends EventEmitter {
       }
       const packet = this.packData(buf);
       return new Promise((resolve, reject) => {
-        this.port.write(packet, (err) => {
-          if (err) {
-            logger.error('数据发送失败:', err);
-            this.emit('error', err);
+      this.port.write(packet, (err) => {
+        if (err) {
+          logger.error('数据发送失败:', err);
+          this.emit('error', err);
             reject(err);
-          } else {
-            logger.info(`数据发送成功: ${buf.length} 字节`);
-            auditLogger.info('数据发送成功', { size: buf.length });
+        } else {
+          logger.info(`数据发送成功: ${buf.length} 字节`);
+          auditLogger.info('数据发送成功', { size: buf.length });
             resolve();
-          }
+        }
         });
       });
     } catch (error) {
@@ -215,104 +235,257 @@ class SerialManager extends EventEmitter {
   }
 
   /**
+   * 新协议：发送文件（先FILE_REQ，后分块，带REQ_ID）
+   * @param {Buffer|string} fileData - 文件数据或路径
+   * @param {Object} meta - 文件元数据（如 name, size, type 等）
+   * @returns {Promise<void>}
+   */
+  async sendFile(fileData, meta = {}) {
+    const fs = require('fs');
+    const path = require('path');
+    let buf;
+    if (typeof fileData === 'string') {
+      // 传入的是文件路径
+      buf = fs.readFileSync(fileData);
+      if (!meta.name) meta.name = path.basename(fileData);
+      if (!meta.size) meta.size = buf.length;
+    } else {
+      buf = Buffer.isBuffer(fileData) ? fileData : Buffer.from(fileData);
+      if (!meta.size) meta.size = buf.length;
+    }
+    if (!meta.name) meta.name = 'unnamed_' + Date.now();
+    if (!meta.type && meta.name.includes('.')) meta.type = meta.name.split('.').pop();
+    // 1. 发送 FILE_REQ（进一步简化，只传递文件名字符串）
+    const reqId = Math.floor(Math.random() * 200) + 1; // 简单生成，实际可更健壮
+    const fileName = meta.name || 'unnamed_' + Date.now();
+    const metaBuf = Buffer.from(fileName, 'utf8');
+    const reqHeader = Buffer.from([0xAA, PKG_TYPE.FILE_REQ, reqId, metaBuf.length]);
+    const reqSum = [PKG_TYPE.FILE_REQ, reqId, metaBuf.length, ...metaBuf].reduce((a, b) => (a + b) & 0xFF, 0);
+    const reqPacket = Buffer.concat([reqHeader, metaBuf, Buffer.from([reqSum])]);
+    await this._writePacket(reqPacket);
+    // 2. 等待 FILE_ACCEPT/REJECT
+    const accept = await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.removeListener('_fileAccept', onAccept);
+        this.removeListener('_fileReject', onReject);
+        reject(new Error('等待对端确认超时'));
+      }, this.timeout * 20);
+      const onAccept = (recvReqId) => {
+        if (recvReqId === reqId) {
+          clearTimeout(timer);
+          this.removeListener('_fileAccept', onAccept);
+          this.removeListener('_fileReject', onReject);
+          resolve(true);
+        }
+      };
+      const onReject = (recvReqId, reason) => {
+        if (recvReqId === reqId) {
+          clearTimeout(timer);
+          this.removeListener('_fileAccept', onAccept);
+          this.removeListener('_fileReject', onReject);
+          reject(new Error('对端拒绝接收: ' + (reason || '无理由')));
+        }
+      };
+      this.on('_fileAccept', onAccept);
+      this.on('_fileReject', onReject);
+    });
+    if (!accept) throw new Error('对端未同意接收');
+    // 3. 分块发送（所有包带 REQ_ID）
+    let sendBuf = buf;
+    if (this.compression) {
+      sendBuf = zlib.deflateSync(sendBuf);
+    }
+    const chunkSize = this.chunkSize || 256;
+    const total = Math.ceil(sendBuf.length / chunkSize);
+    let startTime = Date.now();
+    let sentBytes = 0;
+    let totalRetries = 0;
+    let lostBlocks = 0;
+    for (let seq = 0; seq < total; seq++) {
+      const chunk = sendBuf.slice(seq * chunkSize, (seq + 1) * chunkSize);
+      let retries = 0;
+      while (retries < this.retryAttempts) {
+        await this._writePacket(this._packChunkWithReqId(PKG_TYPE.DATA, reqId, seq, total, chunk));
+        const ack = await this._waitForAckNew(reqId, seq, this.timeout);
+        if (ack) break;
+        retries++;
+        if (logger && typeof logger.warn === 'function') {
+          logger.warn(`块${seq}未收到ACK，重试${retries}`, { onlyFile: true });
+        }
+      }
+      if (retries === this.retryAttempts) throw new Error(`块${seq}发送失败`);
+      sentBytes += chunk.length;
+      totalRetries += retries;
+      if (retries > 0) lostBlocks++;
+      const now = Date.now();
+      const elapsed = (now - startTime) / 1000;
+      const speed = elapsed > 0 ? Math.round(sentBytes / elapsed) : 0;
+      const percent = Math.round(((seq + 1) / total) * 100);
+      this.emit('progress', {
+        type: 'send',
+        reqId,
+        seq,
+        total,
+        percent,
+        speed,
+        retries,
+        totalRetries,
+        lostBlocks,
+        meta
+      });
+    }
+    logger.info('所有数据块发送完成');
+  }
+
+  /**
    * 统一协议数据接收入口，自动区分短包/分块包
    */
   handleDataReceived(data) {
     let buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    // 判断包类型
-    if (buf.length >= 7 && buf[0] === 0xAA) {
-      // 可能是分块包
-      const chunk = this.unpackChunk(buf);
-      if (chunk) {
-        if (chunk.type === PKG_TYPE.DATA) {
-          this.handleChunk(chunk);
-          this.sendAck(chunk.seq);
-        } else if (chunk.type === PKG_TYPE.ACK) {
-          this.emit('ack', chunk.seq);
-        } else if (chunk.type === PKG_TYPE.RETRY) {
-          // 可扩展：重传逻辑
+    // 只保留新协议：优先判断 FILE_REQ/ACCEPT/REJECT
+    if (buf.length >= 4 && buf[0] === 0xAA) {
+      const type = buf[1];
+      if (type === PKG_TYPE.FILE_REQ) {
+        // [0xAA][0x10][REQ_ID][LEN][META][CHECKSUM]
+        const reqId = buf[2];
+        const metaLen = buf[3];
+        if (buf.length === 4 + metaLen + 1) {
+          const fileName = buf.slice(4, 4 + metaLen).toString();
+          const meta = { name: fileName }; // 构造简单的meta对象
+          const checksum = buf[4 + metaLen];
+          const sum = [type, reqId, metaLen, ...Buffer.from(fileName)].reduce((a, b) => (a + b) & 0xFF, 0);
+          if (checksum === sum) {
+            // 触发 fileRequest 事件，带 accept/reject 回调
+            const self = this;
+            const acceptCallback = function(savePath) {
+              // 发送 FILE_ACCEPT
+              const acceptBuf = Buffer.from([0xAA, PKG_TYPE.FILE_ACCEPT, reqId, 0, PKG_TYPE.FILE_ACCEPT]);
+              self.port.write(acceptBuf, (err) => {
+                if (err) {
+                  logger.error('FILE_ACCEPT 包写入串口失败:', err);
+                }
+              });
+              // 记录会话，准备接收分块
+              self._fileSessions[reqId] = {
+                meta,
+                savePath: savePath || meta.name,
+                chunks: {},
+                total: null,
+                startTime: Date.now()
+              };
+            };
+            const rejectCallback = function(reason) {
+              // 发送 FILE_REJECT
+              const reasonBuf = Buffer.from(reason || '', 'utf8');
+              const rejectHeader = Buffer.from([0xAA, PKG_TYPE.FILE_REJECT, reqId, reasonBuf.length]);
+              const sum2 = [PKG_TYPE.FILE_REJECT, reqId, reasonBuf.length, ...reasonBuf].reduce((a, b) => (a + b) & 0xFF, 0);
+              const rejectBuf = Buffer.concat([rejectHeader, reasonBuf, Buffer.from([sum2])]);
+              self.port.write(rejectBuf);
+            };
+            this.emit('fileRequest', meta, acceptCallback, rejectCallback);
+            // 自动同意逻辑
+            const autoAccept = (config.has && config.has('sync.autoAccept')) ? config.get('sync.autoAccept') : true;
+            if (autoAccept) {
+              // 默认保存到配置目录+文件名
+              const path = require('path');
+              const saveDir = (config.has && config.has('sync.saveDir')) ? config.get('sync.saveDir') : path.join(process.cwd(), 'recv');
+              const fs = require('fs');
+              if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+              const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
+              // 直接调用 accept 回调
+              acceptCallback(savePath);
+            }
+            return;
+          }
         }
-        // 分块包（无论类型）都直接 return
+      } else if (type === PKG_TYPE.FILE_ACCEPT) {
+        const reqId = buf[2];
+        this.emit('_fileAccept', reqId);
+        return;
+      } else if (type === PKG_TYPE.FILE_REJECT) {
+        const reqId = buf[2];
+        const len = buf[3];
+        const reason = buf.slice(4, 4 + len).toString();
+        this.emit('_fileReject', reqId, reason);
         return;
       }
     }
-    // 新增：ACK/RETRY 包长度为5，且第二字节为0x02/0x03，直接 return
-    if (
-      buf.length === 5 &&
-      buf[0] === 0xAA &&
-      (buf[1] === PKG_TYPE.ACK || buf[1] === PKG_TYPE.RETRY)
-    ) {
-      if (buf[1] === PKG_TYPE.ACK) {
-        this.emit('ack', buf[2]);
+    // 只保留新协议分块包（带REQ_ID）
+    if (buf.length >= 9 && buf[0] === 0xAA && (buf[1] === PKG_TYPE.DATA || buf[1] === PKG_TYPE.ACK || buf[1] === PKG_TYPE.RETRY)) {
+      const type = buf[1];
+      const reqId = buf[2];
+          // 只声明一次 seq
+    const seq = buf.readUInt16BE(3);
+    const total = buf.readUInt16BE(5);
+    const len = buf.readUInt16BE(7);
+      if (buf.length !== 9 + len + 1) return;
+      const data = buf.slice(9, 9 + len);
+      const checksum = buf[9 + len];
+      const sum = [type, reqId, ...buf.slice(3, 9), ...data].reduce((a, b) => (a + b) & 0xFF, 0);
+      if (checksum !== sum) return;
+      // 只处理 DATA 包
+      if (type === PKG_TYPE.DATA) {
+        // 查找会话
+        const session = this._fileSessions[reqId];
+        if (!session) {
+          return; // 未确认的文件请求
+        }
+        if (!session.total) session.total = total;
+        session.chunks[seq] = data;
+        // 发送 ACK
+        const ackPacket = this._packChunkWithReqId(PKG_TYPE.ACK, reqId, seq, 0, Buffer.alloc(0));
+        this.port.write(ackPacket);
+        // 进度事件
+        const received = Object.keys(session.chunks).length;
+        const percent = Math.round((received / session.total) * 100);
+        const now = Date.now();
+        const elapsed = (now - session.startTime) / 1000;
+        const bytes = Object.values(session.chunks).reduce((a, b) => a + b.length, 0);
+        const speed = elapsed > 0 ? Math.round(bytes / elapsed) : 0;
+        this.emit('progress', {
+          type: 'receive',
+          reqId,
+          seq,
+          total: session.total,
+          percent,
+          speed,
+          meta: session.meta
+        });
+        // 全部收到
+        if (received === session.total) {
+          const bufs = [];
+          for (let i = 0; i < session.total; i++) bufs.push(session.chunks[i]);
+          let all = Buffer.concat(bufs);
+          if (this.compression) {
+            try { all = zlib.inflateSync(all); } catch (e) { logger.warn('解压失败', e); }
+          }
+          this.emit('file', all, session.meta, session.savePath);
+          delete this._fileSessions[reqId];
+        }
+      } else if (type === PKG_TYPE.ACK) {
+        this.emit('_ack', reqId, seq);
       }
-      // 这是 ACK 或 RETRY 包，直接 return
       return;
     }
-    // 否则尝试短包协议
-    const { data: unpacked, valid } = this.unpackData(buf);
-    if (!valid) {
-      this.loggerWarnOrRequestRetrans(buf);
-      return;
-    }
-    let processed = unpacked;
+    // 恢复短包协议解析
+    if (buf.length >= 4 && buf[0] === 0xAA) {
+      const len = buf[1];
+      if (buf.length === len + 3) {
+        const dataPart = buf.slice(2, 2 + len);
+        const checksum = buf[2 + len];
+        const valid = this.calcChecksum(dataPart) === checksum;
+        if (valid) {
+          let processed = dataPart;
     if (this.compression) {
-      try {
-        processed = zlib.inflateSync(unpacked);
-      } catch (e) {
-        logger.warn('数据解压缩失败:', e);
-      }
+            try { processed = zlib.inflateSync(dataPart); } catch (e) { logger.warn('数据解压缩失败:', e); }
     }
     logger.info(`接收到短包数据: ${processed.length} 字节`);
     this.emit('data', processed);
-    this.sendAcknowledgment();
-  }
-
-  /**
-   * 分块数据重组，emit 'file' 事件
-   */
-  handleChunk(chunk) {
-    if (!this._recvChunks) this._recvChunks = {};
-    if (!this._recvTotal) this._recvTotal = chunk.total;
-    this._recvChunks[chunk.seq] = chunk.data;
-    // 进度细化
-    const received = Object.keys(this._recvChunks).length;
-    const percent = Math.round((received / this._recvTotal) * 100);
-    const now = Date.now();
-    if (!this._recvStartTime) this._recvStartTime = now;
-    const elapsed = (now - this._recvStartTime) / 1000;
-    const bytes = Object.values(this._recvChunks).reduce((a, b) => a + b.length, 0);
-    const speed = elapsed > 0 ? Math.round(bytes / elapsed) : 0;
-    const eta = speed > 0 ? Math.round((bytes * (this._recvTotal - received)) / speed) : 0;
-    this.emit('progress', {
-      type: 'receive',
-      seq: chunk.seq,
-      total: this._recvTotal,
-      percent,
-      speed,
-      eta
-    });
-    // 全部收到
-    if (received === this._recvTotal) {
-      const bufs = [];
-      for (let i = 0; i < this._recvTotal; i++) bufs.push(this._recvChunks[i]);
-      let all = Buffer.concat(bufs);
-      if (this.compression) {
-        try { all = zlib.inflateSync(all); } catch (e) { logger.warn('解压失败', e); }
+          this.sendAcknowledgment && this.sendAcknowledgment();
+        }
       }
-      this.emit('file', all);
-      this._recvChunks = null;
-      this._recvTotal = null;
-      this._recvStartTime = null;
     }
-  }
-
-  /**
-   * 辅助：无效包时日志与重传
-   */
-  loggerWarnOrRequestRetrans(buf) {
-    logger.warn('接收到无效协议包，请求重传', buf);
-    this.requestRetransmission();
-    this.emit('error', new Error('协议包校验失败'));
+    // 其余包型全部忽略
   }
 
   /**
@@ -358,25 +531,25 @@ class SerialManager extends EventEmitter {
    */
   disconnect() {
     return new Promise((resolve, reject) => {
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-        this.reconnectTimer = null;
-      }
-      if (this.port && this.isConnected) {
-        this.port.close((error) => {
-          if (error) {
-            logger.error('断开连接错误:', error);
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.port && this.isConnected) {
+      this.port.close((error) => {
+        if (error) {
+          logger.error('断开连接错误:', error);
             reject(error);
-          } else {
-            logger.info('串口连接已断开');
-            this.isConnected = false;
-            this.emit('disconnected');
+        } else {
+          logger.info('串口连接已断开');
+          this.isConnected = false;
+          this.emit('disconnected');
             resolve();
-          }
-        });
+        }
+      });
       } else {
         resolve();
-      }
+    }
     });
   }
 
@@ -576,6 +749,39 @@ class SerialManager extends EventEmitter {
   sendAck(seq) {
     const ack = this.packChunk(PKG_TYPE.ACK, seq, 0, Buffer.alloc(0));
     this.port.write(ack);
+  }
+
+  // 新协议分块包组包
+  _packChunkWithReqId(type, reqId, seq, total, data) {
+    const len = data.length;
+    const header = Buffer.alloc(9);
+    header[0] = 0xAA;
+    header[1] = type;
+    header[2] = reqId;
+    header.writeUInt16BE(seq, 3);
+    header.writeUInt16BE(total, 5);
+    header.writeUInt16BE(len, 7);
+    const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const sum = [type, reqId, ...header.slice(3, 9), ...body].reduce((a, b) => (a + b) & 0xFF, 0);
+    return Buffer.concat([header, body, Buffer.from([sum])]);
+  }
+
+  // 新协议ACK等待
+  _waitForAckNew(reqId, seq, timeout) {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this.removeListener('_ack', onAck);
+        resolve(false);
+      }, timeout);
+      const onAck = (recvReqId, ackSeq) => {
+        if (recvReqId === reqId && ackSeq === seq) {
+          clearTimeout(timer);
+          this.removeListener('_ack', onAck);
+          resolve(true);
+        }
+      };
+      this.on('_ack', onAck);
+    });
   }
 }
 

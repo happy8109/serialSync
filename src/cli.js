@@ -27,6 +27,29 @@ class SerialCLI {
         this.manager.on('error', (err) => {
             console.error('串口错误:', err.message || err);
         });
+        // 自动保存文件（扩展协议）
+        this.manager.on('file', (buf, meta, savePath) => {
+            if (savePath) {
+                const fs = require('fs');
+                try {
+                    fs.writeFileSync(savePath, buf);
+                    console.log(`\n[自动保存] 文件已保存到: ${savePath}`);
+                } catch (e) {
+                    console.error(`[自动保存] 文件保存失败: ${e.message}`);
+                }
+            }
+        });
+        
+        // 监听接收进度（自动接收文件时）
+        let lastReceivePercent = -1;
+        this.manager.on('progress', (info) => {
+            if (info.type === 'receive' && info.total) {
+                if (info.percent !== lastReceivePercent) {
+                    process.stdout.write(`\r接收进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)}`);
+                    lastReceivePercent = info.percent;
+                }
+            }
+        });
     }
 
     /**
@@ -205,7 +228,6 @@ class SerialCLI {
         try {
             const stat = fs.statSync(filepath);
             const totalSize = stat.size;
-            const data = fs.readFileSync(filepath);
             let lastPercent = -1;
             // 监听进度
             const onProgress = (info) => {
@@ -217,7 +239,7 @@ class SerialCLI {
                 }
             };
             this.manager.on('progress', onProgress);
-            await this.manager.sendLargeData(data);
+            await this.manager.sendFile(filepath);
             this.manager.removeListener('progress', onProgress);
             // 只输出完成提示，不再输出任何统计或总结行
             console.log(`\n文件发送完成，总字节数: ${totalSize}`);
