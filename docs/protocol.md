@@ -33,29 +33,66 @@
 
 ## 4. 扩展协议设计与未来方向
 
-### 4.1 扩展协议包类型
-- FILE_REQ：文件传输请求，包含文件名、大小、类型、是否需确认等元数据。
-- FILE_ACCEPT：接收端同意接收。
-- FILE_REJECT：接收端拒绝接收。
-- DATA/ACK/RETRY：分块数据、确认、重传。
+### 4.1 扩展协议包类型与格式
+- **FILE_REQ (0x10)**：文件传输请求，包含文件名、大小、类型、是否需确认等元数据。
+  - 格式：[0xAA][0x10][REQ_ID][LEN][META][CHECKSUM]
+    - 0xAA: 包头 (1字节)
+    - 0x10: 包类型 (1字节)
+    - REQ_ID: 请求ID (1字节)
+    - LEN: META长度 (1字节)
+    - META: JSON字符串，包含文件名、大小、类型、建议保存路径等
+    - CHECKSUM: 校验和 (1字节，对TYPE~META所有字节累加和 & 0xFF)
+
+- **FILE_ACCEPT (0x11)**：接收端同意接收。
+  - 格式：[0xAA][0x11][REQ_ID][0][CHECKSUM]
+    - 0x11: 包类型 (1字节)
+    - REQ_ID: 请求ID (1字节)
+    - 0: 数据长度为0
+    - CHECKSUM: 校验和
+
+- **FILE_REJECT (0x12)**：接收端拒绝接收。
+  - 格式：[0xAA][0x12][REQ_ID][LEN][REASON][CHECKSUM]
+    - 0x12: 包类型 (1字节)
+    - REQ_ID: 请求ID (1字节)
+    - LEN: 原因字符串长度 (1字节)
+    - REASON: 拒绝原因（可选）
+    - CHECKSUM: 校验和
+
+- **分块数据包 (DATA/ACK/RETRY)**
+  - 格式：[0xAA][TYPE][REQ_ID][SEQ(2)][TOTAL(2)][LEN(2)][DATA][CHECKSUM]
+    - TYPE: 0x01=DATA, 0x02=ACK, 0x03=RETRY
+    - REQ_ID: 请求ID (1字节)，关联 FILE_REQ
+    - 其余同分块协议
 
 ### 4.2 事件流与接口机制
-- fileRequest(req)：收到文件请求，req 包含所有元数据。
-- fileAccept/fileReject：对端同意/拒绝。
-- fileProgress(info)：进度事件。
-- file(fileBuffer, meta)：文件接收完成，meta 包含文件名、保存路径等。
+- 发送端：`sendFile()` → 发送 FILE_REQ → 等待 FILE_ACCEPT/REJECT → 若 ACCEPT，开始分块发送
+- 接收端：收到 FILE_REQ → 触发 `fileRequest(meta, accept, reject)` 事件（可交互/自动）→ 回复 ACCEPT/REJECT → 若 ACCEPT，准备接收分块
+- 传输完成后，emit `file(meta, savePath)` 事件，参数包含最终保存路径、元数据等
+- 进度事件：`fileProgress(info)`，包含百分比、速率、丢块、重试等
 
 ### 4.3 会话对象与多任务支持
-- 每次收到 FILE_REQ，新建会话对象，记录文件名、保存路径、是否需确认等。
-- 分块数据到达时，查找会话对象，重组后 emit file 事件，带上 meta 信息。
-- 传输完成后清理会话对象，避免多任务/多文件时错乱。
+- 每次收到 FILE_REQ，新建会话对象，记录文件名、保存路径、是否需确认等
+- 分块数据到达时，查找会话对象，重组后 emit file 事件，带上 meta 信息
+- 传输完成后清理会话对象，避免多任务/多文件时错乱
 
 ### 4.4 UI/CLI/自动化对接建议
-- 业务层（CLI/自动化/未来UI）只需监听事件，所有元数据和保存路径都通过事件参数传递。
-- 彻底避免依赖全局变量，事件参数即为"真相"。
-- 支持两种模式：需确认型（适合UI/点对点/需人工确认）、无需确认型（如 sendfile -e，适合自动同步）。
-- 为UI/自动化预留接口，如自动弹窗、自动保存、历史记录等。
+- 业务层（CLI/自动化/未来UI）只需监听事件，所有元数据和保存路径都通过事件参数传递
+- 彻底避免依赖全局变量，事件参数即为"真相"
+- 支持两种模式：需确认型（适合UI/点对点/需人工确认）、无需确认型（如 sendfile -e，适合自动同步）
+- 为UI/自动化预留接口，如自动弹窗、自动保存、历史记录等
 
 ### 4.5 设计目标
-- 兼容现有分块协议，协议层与业务层解耦，便于后续扩展和团队协作。
-- 支持高效、健壮的点对点同步、自动化批量同步、UI交互等多场景。 
+- 兼容现有分块协议，协议层与业务层解耦，便于后续扩展和团队协作
+- 支持高效、健壮的点对点同步、自动化批量同步、UI交互等多场景
+
+---
+
+#### 【示例包】
+- 发送端发起请求：
+  `[0xAA][0x10][0x01][LEN][{"name":"test.txt","size":12345,"type":"txt"}][CHECKSUM]`
+- 接收端同意：
+  `[0xAA][0x11][0x01][0][CHECKSUM]`
+- 接收端拒绝：
+  `[0xAA][0x12][0x01][LEN]["空间不足"][CHECKSUM]`
+- 分块数据包：
+  `[0xAA][0x01][0x01][SEQ][TOTAL][LEN][DATA][CHECKSUM]` 
