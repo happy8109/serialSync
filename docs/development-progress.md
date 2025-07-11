@@ -75,3 +75,33 @@ saveDir: received_files
 - [ ] 传输历史记录与校验
 - [ ] Web UI/可视化进度
 
+---
+
+## 接口评估与多文件队列建议
+
+### 1. SerialManager 接口完整性与可用性评估
+- SerialManager 提供了完整的串口连接、断开、状态查询、短消息/文件发送、进度与异常事件、文件元数据与确认机制等接口。
+- 事件驱动架构，所有关键节点均有事件（file、fileRequest、progress、error 等），UI/CLI 可灵活订阅，便于后续界面开发。
+- 文件接收支持自动保存与“另存为”两种模式，进度、丢块、重试等统计信息丰富，满足 UI 可视化需求。
+- 配置参数可动态调整，便于 UI 设置界面和运行时优化。
+- 结论：接口设计完整、事件丰富，完全满足下一阶段 UI 开发的对接需求。
+
+### 2. 多文件队列传输的实现建议
+- 鉴于串口速率有限，并发传输无实际意义，SerialManager 只需保证单文件传输的健壮性。
+- 多文件队列传输推荐在 CLI/UI/脚本层实现队列调度，无需在 SerialManager 内部增加复杂度。
+- 业界通用做法也是“上层调度、底层单文件传输”，便于维护和扩展。
+
+#### 典型伪代码（UI/CLI 层队列调度）
+```js
+async function sendFilesInQueue(fileList) {
+  for (const file of fileList) {
+    await serialManager.sendFile(file);
+    // 可监听 progress/file 事件，更新UI进度
+  }
+}
+```
+
+- 这样既能实现批量传输、进度统计、失败重试等高级功能，又保持底层代码简洁高效。
+
+---
+

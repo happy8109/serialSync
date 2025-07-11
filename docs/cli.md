@@ -58,3 +58,20 @@ autospeed test.bin
 ---
 
 如需详细协议、接口、开发进度等，请查阅 docs/protocol.md、docs/development-progress.md。 
+
+---
+
+## 多文件队列传输建议
+- 串口速率有限，SerialManager 只需保证单文件传输的健壮性。
+- 多文件队列传输推荐由 CLI/UI/脚本层实现队列调度，无需在 SerialManager 内部增加复杂度。
+- 典型实现方式：循环调用 sendFile，监听 progress/file 事件。
+
+### 伪代码示例
+```js
+async function sendFilesInQueue(fileList) {
+  for (const file of fileList) {
+    await serialManager.sendFile(file);
+    // 可监听 progress/file 事件，更新UI进度
+  }
+}
+``` 
