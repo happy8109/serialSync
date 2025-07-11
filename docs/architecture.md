@@ -1,6 +1,18 @@
-# SerialSync 架构与开发计划
+# SerialSync 架构设计
 
-> 本项目核心目标：高效可靠的串口文字与文件同步，详见本文件。
+## 项目愿景与核心目标
+
+SerialSync 致力于打造一个基于串口的双机文件共享/同步平台，支持点对点文件传输和字符传输（聊天），适用于无网络环境下的工业、实验室、嵌入式等场景。
+
+### 主要目标：
+- **串口双机文件共享/同步**：让两台设备通过串口实现类似“网盘/同步盘”的文件互通，支持自动/手动同步、目录级文件管理。
+- **点对点文件传输**：支持用户主动选择文件，通过串口点对点发送，适合临时文件交换、批量传输。
+- **点对点字符传输（聊天）**：支持实时文本消息传递，实现简易聊天或命令交互。
+- **跨平台、低门槛、易用性**：让没有网络环境的设备也能方便地进行文件和消息同步。
+
+> 提示：后续 UI 和高级功能开发应始终聚焦于上述高层应用目标，避免只关注底层协议和工具实现。
+
+---
 
 ## 核心功能
 
@@ -31,3 +43,40 @@ SerialSync 项目有两大核心功能，所有协议、架构与实现均围绕
 
 - 详见 docs/development-progress.md 下阶段开发计划。
 - 重点关注多文件队列、性能优化、Web UI、用户体验提升等方向。 
+
+---
+
+## 后端服务协议设计与多端兼容性
+
+为确保 SerialSync 后端服务具备更高的通用性和兼容性，推荐采用“RESTful API + WebSocket”组合协议，既能对接 Web UI，也能通过 API 与桌面应用（如 WinForms、Electron、Qt 等）无缝集成。
+
+### 推荐架构
+- **RESTful API**：适合所有平台（Web、桌面、移动、脚本等）进行命令调用、状态查询、文件上传/下载。
+- **WebSocket**：适合推送实时事件（如进度、日志、文件请求、状态变更等），提升前端体验。
+- **文件传输**：建议用标准 HTTP(S) multipart/form-data 或流式下载接口，兼容所有主流前端。
+
+### 设计建议
+- API 设计遵循 RESTful 风格，如：
+  - `POST /api/connect`、`POST /api/sendfile`、`GET /api/status`、`GET /api/progress`、`POST /api/sendmsg` 等
+- 事件推送用 WebSocket，如：
+  - `ws://localhost:3000/ws`，推送 progress、fileRequest、log、error 等事件
+- 接口文档标准化，建议采用 OpenAPI/Swagger 规范，便于多端对接和自动生成客户端代码
+- 可选身份认证/安全机制（如 JWT、Token、IP 白名单等）
+
+### 桌面应用对接注意事项
+- .NET（WinForms/WPF）、Electron、Qt、Java、Python 等均原生支持 HTTP/WebSocket
+- 避免仅浏览器支持的协议（如 SSE），优先用 WebSocket
+- 文件传输接口要支持大文件分块/断点续传（如有需求）
+
+### 典型多端对接流程（以 WinForms 为例）
+1. **连接串口**：`POST /api/connect`，参数为串口号、波特率等
+2. **发送/接收文件**：`POST /api/sendfile` 上传文件，`GET /api/receivefile` 下载文件
+3. **实时进度/事件**：通过 WebSocket 订阅进度、日志、文件请求等事件
+4. **状态查询**：`GET /api/status` 查询当前连接、任务、速率等
+
+### 结论
+- RESTful API + WebSocket 是最通用、跨平台、易维护的服务协议组合，适合 Web、桌面、移动等多端对接。
+- 只要接口标准化，任何支持 HTTP/WebSocket 的前端都能无缝对接本项目。
+- 此方案为后续多端开发（Web UI、WinForms、Electron、Qt 等）提供坚实基础。
+
+--- 
