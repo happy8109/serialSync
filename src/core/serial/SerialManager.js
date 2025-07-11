@@ -66,6 +66,7 @@ class SerialManager extends EventEmitter {
     this.timeout = config.get('sync.timeout');
     this.retryAttempts = config.get('sync.retryAttempts');
     this.compression = config.get('sync.compression');
+    this.confirmTimeout = config.get('sync.confirmTimeout', 30000);
     this._fileSessions = {}; // { reqId: { meta, savePath, chunks: {}, total, startTime } }
     this._userPort = null; // 记住用户指定端口
     this._currentPort = null; // 记录当前实际连接端口
@@ -235,9 +236,11 @@ class SerialManager extends EventEmitter {
    * 新协议：发送文件（先FILE_REQ，后分块，带REQ_ID）
    * @param {Buffer|string} fileData - 文件数据或路径
    * @param {Object} meta - 文件元数据（如 name, size, type 等）
+   * @param {Object} options - 传输选项
+   * @param {boolean} options.requireConfirm - 是否需要接收方确认（默认false，即自动同意）
    * @returns {Promise<void>}
    */
-  async sendFile(fileData, meta = {}) {
+  async sendFile(fileData, meta = {}, options = {}) {
     const fs = require('fs');
     const path = require('path');
     let buf;
@@ -252,21 +255,33 @@ class SerialManager extends EventEmitter {
     }
     if (!meta.name) meta.name = 'unnamed_' + Date.now();
     if (!meta.type && meta.name.includes('.')) meta.type = meta.name.split('.').pop();
-    // 1. 发送 FILE_REQ（进一步简化，只传递文件名字符串）
+    // 1. 发送 FILE_REQ（包含文件名和确认要求）
     const reqId = Math.floor(Math.random() * 200) + 1; // 简单生成，实际可更健壮
     const fileName = meta.name || 'unnamed_' + Date.now();
-    const metaBuf = Buffer.from(fileName, 'utf8');
+    
+    // 构建元数据：文件名 + 文件大小 + 确认要求标志
+    const requireConfirm = options.requireConfirm || false;
+    const metaData = {
+      name: fileName,
+      size: meta.size || buf.length,
+      requireConfirm: requireConfirm
+    };
+    const metaStr = JSON.stringify(metaData);
+    const metaBuf = Buffer.from(metaStr, 'utf8');
+    
     const reqHeader = Buffer.from([0xAA, PKG_TYPE.FILE_REQ, reqId, metaBuf.length]);
     const reqSum = [PKG_TYPE.FILE_REQ, reqId, metaBuf.length, ...metaBuf].reduce((a, b) => (a + b) & 0xFF, 0);
     const reqPacket = Buffer.concat([reqHeader, metaBuf, Buffer.from([reqSum])]);
     await this._writePacket(reqPacket);
     // 2. 等待 FILE_ACCEPT/REJECT
     const accept = await new Promise((resolve, reject) => {
+      // 对于需要确认的文件传输，使用配置的确认超时时间
+      const confirmTimeout = requireConfirm ? this.confirmTimeout : (this.timeout * 20);
       const timer = setTimeout(() => {
         this.removeListener('_fileAccept', onAccept);
         this.removeListener('_fileReject', onReject);
         reject(new Error('等待对端确认超时'));
-      }, this.timeout * 20);
+      }, confirmTimeout);
       const onAccept = (recvReqId) => {
         if (recvReqId === reqId) {
           clearTimeout(timer);
@@ -347,16 +362,34 @@ class SerialManager extends EventEmitter {
         const reqId = buf[2];
         const metaLen = buf[3];
         if (buf.length === 4 + metaLen + 1) {
-          const fileName = buf.slice(4, 4 + metaLen).toString();
-          const meta = { name: fileName }; // 构造简单的meta对象
+          const metaStr = buf.slice(4, 4 + metaLen).toString();
+          let meta;
+          let requireConfirm = false;
+          
+          try {
+            // 尝试解析为JSON格式（新协议）
+            const metaData = JSON.parse(metaStr);
+            meta = { 
+              name: metaData.name,
+              size: metaData.size
+            };
+            requireConfirm = metaData.requireConfirm || false;
+          } catch (e) {
+            // 兼容旧协议：直接是文件名字符串
+            meta = { name: metaStr };
+            requireConfirm = false;
+          }
+          
           const checksum = buf[4 + metaLen];
-          const sum = [type, reqId, metaLen, ...Buffer.from(fileName)].reduce((a, b) => (a + b) & 0xFF, 0);
+          const sum = [type, reqId, metaLen, ...Buffer.from(metaStr)].reduce((a, b) => (a + b) & 0xFF, 0);
           if (checksum === sum) {
-            // 触发 fileRequest 事件，带 accept/reject 回调
+            // 触发 fileRequest 事件，带 accept/reject 回调和确认要求
             const self = this;
             const acceptCallback = function(savePath) {
               // 发送 FILE_ACCEPT
-              const acceptBuf = Buffer.from([0xAA, PKG_TYPE.FILE_ACCEPT, reqId, 0, PKG_TYPE.FILE_ACCEPT]);
+              const acceptHeader = Buffer.from([0xAA, PKG_TYPE.FILE_ACCEPT, reqId, 0]);
+              const acceptSum = [PKG_TYPE.FILE_ACCEPT, reqId, 0].reduce((a, b) => (a + b) & 0xFF, 0);
+              const acceptBuf = Buffer.concat([acceptHeader, Buffer.from([acceptSum])]);
               self.port.write(acceptBuf, (err) => {
                 if (err) {
                   logger.error('FILE_ACCEPT 包写入串口失败:', err);
@@ -379,19 +412,24 @@ class SerialManager extends EventEmitter {
               const rejectBuf = Buffer.concat([rejectHeader, reasonBuf, Buffer.from([sum2])]);
               self.port.write(rejectBuf);
             };
-            this.emit('fileRequest', meta, acceptCallback, rejectCallback);
-            // 自动同意逻辑
-            const autoAccept = (config.has && config.has('sync.autoAccept')) ? config.get('sync.autoAccept') : true;
-            if (autoAccept) {
-              // 默认保存到配置目录+文件名
-              const path = require('path');
-              const saveDir = (config.has && config.has('sync.saveDir')) ? config.get('sync.saveDir') : path.join(process.cwd(), 'recv');
-              const fs = require('fs');
-              if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
-              const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
-              // 直接调用 accept 回调
-              acceptCallback(savePath);
+            
+            // 传递确认要求信息给上层应用
+            this.emit('fileRequest', meta, acceptCallback, rejectCallback, { requireConfirm });
+            // 自动同意逻辑：只有在不需要确认时才自动同意
+            if (!requireConfirm) {
+              const autoAccept = (config.has && config.has('sync.autoAccept')) ? config.get('sync.autoAccept') : true;
+              if (autoAccept) {
+                // 默认保存到配置目录+文件名
+                const path = require('path');
+                const saveDir = (config.has && config.has('sync.saveDir')) ? config.get('sync.saveDir') : path.join(process.cwd(), 'recv');
+                const fs = require('fs');
+                if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+                const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
+                // 直接调用 accept 回调
+                acceptCallback(savePath);
+              }
             }
+            // 如果需要确认，则等待上层应用（CLI/UI）处理
             return;
           }
         }

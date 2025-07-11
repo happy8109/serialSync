@@ -26,6 +26,8 @@
     "timeout": 200,
     "retryAttempts": 3,
     "compression": true,
-    "saveDir": "./received_files"
+    "autoAccept": true,
+    "saveDir": "./received_files",
+    "confirmTimeout": 30000
   }
 } 

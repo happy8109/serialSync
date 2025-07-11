@@ -36,14 +36,23 @@
 ## 4. 扩展协议设计与未来方向
 
 ### 4.1 扩展协议包类型与格式
-- **FILE_REQ (0x10)**：文件传输请求，包含文件名（当前仅传递文件名字符串，后续可扩展为JSON）。
-  - 格式：[0xAA][0x10][REQ_ID][LEN][FILENAME][CHECKSUM]
+- **FILE_REQ (0x10)**：文件传输请求，包含文件元数据（JSON格式）。
+  - 格式：[0xAA][0x10][REQ_ID][LEN][META_JSON][CHECKSUM]
     - 0xAA: 包头 (1字节)
     - 0x10: 包类型 (1字节)
     - REQ_ID: 请求ID (1字节)
-    - LEN: 文件名长度 (1字节)
-    - FILENAME: 文件名字符串（如 "test.txt"）
-    - CHECKSUM: 校验和 (1字节，对TYPE~FILENAME所有字节累加和 & 0xFF)
+    - LEN: 元数据JSON长度 (1字节)
+    - META_JSON: JSON格式元数据（包含文件名、大小、确认要求等）
+    - CHECKSUM: 校验和 (1字节，对TYPE~META_JSON所有字节累加和 & 0xFF)
+    
+    **元数据JSON格式**：
+    ```json
+    {
+      "name": "文件名.ext",
+      "size": 文件大小字节数,
+      "requireConfirm": true/false
+    }
+    ```
 
 - **FILE_ACCEPT (0x11)**：接收端同意接收。
   - 格式：[0xAA][0x11][REQ_ID][0][CHECKSUM]
