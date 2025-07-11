@@ -241,6 +241,11 @@ class SerialManager extends EventEmitter {
    * @returns {Promise<void>}
    */
   async sendFile(fileData, meta = {}, options = {}) {
+    // 发送前清理会话和监听，防止残留影响
+    this._fileSessions = {};
+    this.removeAllListeners('_fileAccept');
+    this.removeAllListeners('_fileReject');
+    this.removeAllListeners('_ack');
     const fs = require('fs');
     const path = require('path');
     let buf;
@@ -417,17 +422,17 @@ class SerialManager extends EventEmitter {
             this.emit('fileRequest', meta, acceptCallback, rejectCallback, { requireConfirm });
             // 自动同意逻辑：只有在不需要确认时才自动同意
             if (!requireConfirm) {
-              const autoAccept = (config.has && config.has('sync.autoAccept')) ? config.get('sync.autoAccept') : true;
-              if (autoAccept) {
-                // 默认保存到配置目录+文件名
-                const path = require('path');
-                const saveDir = (config.has && config.has('sync.saveDir')) ? config.get('sync.saveDir') : path.join(process.cwd(), 'recv');
-                const fs = require('fs');
-                if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
-                const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
-                // 直接调用 accept 回调
-                acceptCallback(savePath);
-              }
+            const autoAccept = (config.has && config.has('sync.autoAccept')) ? config.get('sync.autoAccept') : true;
+            if (autoAccept) {
+              // 默认保存到配置目录+文件名
+              const path = require('path');
+              const saveDir = (config.has && config.has('sync.saveDir')) ? config.get('sync.saveDir') : path.join(process.cwd(), 'recv');
+              const fs = require('fs');
+              if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+              const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
+              // 直接调用 accept 回调
+              acceptCallback(savePath);
+            }
             }
             // 如果需要确认，则等待上层应用（CLI/UI）处理
             return;

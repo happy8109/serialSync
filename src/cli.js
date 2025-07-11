@@ -2,22 +2,22 @@
 
 const path = require('path');
 process.env.NODE_CONFIG_DIR = path.join(__dirname, '..', 'config');
-const readline = require('readline');
 const SerialPort = require('serialport');
 const SerialManager = require('./core/serial/SerialManager');
 const config = require('config');
-const { ReadlineParser } = require('@serialport/parser-readline');
 const inquirer = require('inquirer');
 
 class SerialCLI {
     constructor() {
         this.manager = new SerialManager();
-        this.rl = readline.createInterface({
-            input: process.stdin,
-            output: process.stdout
-        });
+        this._pendingReceiveFile = null; // 修正点：用于 receivefile 临时保存
         this.manager.on('data', (data) => {
             console.log(`接收: ${data.toString('utf8')}`);
+            // 强制刷新 inquirer 提示符
+            if (this._inquirerRl && typeof this._inquirerRl.write === 'function') {
+                this._inquirerRl.write('', { ctrl: true, name: 'u' });
+                if (typeof this._inquirerRl.prompt === 'function') this._inquirerRl.prompt();
+            }
         });
         this.manager.on('disconnected', () => {
             if (!this._disconnectedPrinted) {
@@ -34,20 +34,37 @@ class SerialCLI {
         this.manager.on('error', (err) => {
             console.error('串口错误:', err.message || err);
         });
-        // 自动保存文件（扩展协议）
+        // 修正：file 事件统一分发，优先处理 receivefile
         this.manager.on('file', (buf, meta, savePath) => {
+            const fs = require('fs');
+            if (this._pendingReceiveFile) {
+                // 优先走 receivefile 逻辑
+                const { savepath, callback } = this._pendingReceiveFile;
+                try {
+                    fs.writeFileSync(savepath, buf);
+                    console.log(`\n[另存为] 文件已保存到: ${savepath}`);
+                    if (typeof callback === 'function') callback(null, savepath);
+                } catch (e) {
+                    console.error(`[另存为] 文件保存失败: ${e.message}`);
+                    if (typeof callback === 'function') callback(e);
+                }
+                this._pendingReceiveFile = null; // 清理状态
+                return;
+            }
+            // 默认自动保存
             if (savePath) {
-                const fs = require('fs');
                 try {
                     fs.writeFileSync(savePath, buf);
                     console.log(`\n[自动保存] 文件已保存到: ${savePath}`);
                 } catch (e) {
                     console.error(`[自动保存] 文件保存失败: ${e.message}`);
                 }
-                this.showPrompt(); // 修复：自动保存后恢复主提示符
             }
         });
-        
+        // 监听文件请求事件，处理需确认的文件传输
+        this.manager.on('fileRequest', (meta, accept, reject, options) => {
+            this.handleFileRequest(meta, accept, reject, options);
+        });
         // 监听接收进度（自动接收文件时）
         let lastReceivePercent = -1;
         this.manager.on('progress', (info) => {
@@ -85,77 +102,99 @@ class SerialCLI {
     async start() {
         console.log('SerialSync CLI v1.0.0 - 串口通信命令行工具');
         console.log('输入 "help" 查看可用命令');
-        this.showPrompt();
-        this.setupEventListeners();
-    }
-
-    setupEventListeners() {
-        this.rl.on('line', (input) => {
-            this.handleCommand(input.trim());
-        });
-        
-        // 监听文件请求事件，处理需确认的文件传输
-        this.manager.on('fileRequest', (meta, accept, reject, options) => {
-            this.handleFileRequest(meta, accept, reject, options);
-        });
-    }
-
-    async handleCommand(input) {
-        // 如果正在等待文件确认，则处理确认逻辑
-        if (this._waitingForFileConfirm) {
-            this._handleFileConfirmInput(input);
-            return;
-        }
-        
-        const parts = input.split(' ');
-        const command = parts[0].toLowerCase();
-        const args = parts.slice(1);
+        // 自动连接串口
+        const portArg = process.argv[2];
         try {
-            switch (command) {
-                case 'list':
-                    await this.listPorts();
-                    break;
-                case 'connect':
-                    await this.connect(args[0]);
-                    break;
-                case 'disconnect':
-                    await this.disconnect();
-                    break;
-                case 'send':
-                    await this.sendData(args.join(' '));
-                    break;
-                case 'sendlarge':
-                    await this.sendLargeData(args.join(' '));
-                    break;
-                case 'sendfile':
-                    await this.sendFile(args[0]);
-                    break;
-                case 'sendfile-confirm':
-                    await this.sendFileConfirm(args[0]);
-                    break;
-                case 'receivefile':
-                    await this.receiveFile(args[0]);
-                    break;
-                case 'autospeed':
-                    await this.autoSpeedTest(args[0]);
-                    break;
-                case 'status':
-                    this.showStatus();
-                    break;
-                case 'help':
-                    this.showHelp();
-                    break;
-                case 'quit':
-                    await this.quit();
-                    break;
-                default:
-                    if (command) console.log(`未知命令: ${command}`);
-                    break;
+            const portToConnect = portArg || config.get('serial.port');
+            if (portToConnect) {
+                await this.connect(portToConnect);
+            } else {
+                console.log('未检测到串口端口参数，也未在配置文件中找到默认端口。');
             }
-        } catch (error) {
-            console.error(`错误: ${error.message}`);
+        } catch (e) {
+            console.error('自动连接串口失败:', e.message);
         }
-        this.showPrompt();
+        await this.mainLoop();
+    }
+
+    async mainLoop() {
+        while (true) {
+            let portStr = '未连接';
+            if (this.manager.isConnected) {
+                portStr = (this.manager.port && this.manager.port.path) ? this.manager.port.path : (this.manager.getConnectionStatus().port || '未知');
+            }
+            const status = `[${portStr}]`;
+            const promptObj = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'cmd',
+                    message: `${status} >`,
+                }
+            ]);
+            // 保存 inquirer 的 rl 实例用于异步刷新
+            if (inquirer.prompts && inquirer.prompts.input && inquirer.prompts.input.prototype && inquirer.prompts.input.prototype.rl) {
+                this._inquirerRl = inquirer.prompts.input.prototype.rl;
+            } else if (promptObj && promptObj.ui && promptObj.ui.rl) {
+                this._inquirerRl = promptObj.ui.rl;
+            } else if (inquirer && inquirer.rl) {
+                this._inquirerRl = inquirer.rl;
+            }
+            const input = promptObj.cmd.trim();
+            // 跳过 inquirer 确认后的 y/n 输入
+            if (["y", "n", "yes", "no", "是", "否"].includes(input.toLowerCase())) {
+                continue;
+            }
+            const parts = input.split(' ');
+            const command = parts[0].toLowerCase();
+            const args = parts.slice(1);
+            try {
+                switch (command) {
+                    case 'list':
+                        await this.listPorts();
+                        break;
+                    case 'connect':
+                        await this.connect(args[0]);
+                        break;
+                    case 'disconnect':
+                        await this.disconnect();
+                        break;
+                    case 'send':
+                        await this.sendData(args.join(' '));
+                        break;
+                    case 'sendlarge':
+                        await this.sendLargeData(args.join(' '));
+                        break;
+                    case 'sendfile':
+                        await this.sendFile(args[0]);
+                        break;
+                    case 'sendfile-confirm':
+                        await this.sendFileConfirm(args[0]);
+                        break;
+                    case 'receivefile':
+                        await this.receiveFile(args[0]);
+                        break;
+                    case 'autospeed':
+                        await this.autoSpeedTest(args[0]);
+                        break;
+                    case 'status':
+                        this.showStatus();
+                        break;
+                    case 'help':
+                        this.showHelp();
+                        break;
+                    case 'quit':
+                        await this.quit();
+                        return;
+                    case '':
+                        break;
+                    default:
+                        if (command) console.log(`未知命令: ${command}`);
+                        break;
+                }
+            } catch (error) {
+                console.error(`错误: ${error.message}`);
+            }
+        }
     }
 
     /**
@@ -163,30 +202,39 @@ class SerialCLI {
      */
     async handleFileRequest(meta, accept, reject, options) {
         const { requireConfirm } = options || {};
-        
+        const path = require('path');
+        const config = require('config');
+        const saveDir = config.get('sync.saveDir', path.join(process.cwd(), 'received_files'));
+        const fs = require('fs');
+        // 统一输出文件请求提示
+        console.log(`\n📁 收到文件传输请求:`);
+        console.log(`   文件名: ${meta.name}`);
+        console.log(`   大小: ${meta.size ? this.formatSize(meta.size) : '未知'}`);
         if (!requireConfirm) {
-            // 不需要确认，自动同意（兼容旧协议）
-            const path = require('path');
-            const config = require('config');
-            const saveDir = config.get('sync.saveDir', path.join(process.cwd(), 'received_files'));
-            const fs = require('fs');
             if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
             const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
             accept(savePath);
             return;
         }
-        
-        // 需要确认，显示提示并等待用户输入
-        console.log(`\n📁 收到文件传输请求:`);
-        console.log(`   文件名: ${meta.name}`);
-        console.log(`   大小: ${meta.size ? this.formatSize(meta.size) : '未知'}`);
-        console.log(`\n是否同意接收此文件? (y/n): `);
-        
-        // 使用全局标志控制输入处理
-        return new Promise((resolve) => {
-            // 设置等待标志
-            this._waitingForFileConfirm = true;
-            this._fileConfirmData = { meta, accept, reject, resolve };
+        // 需要确认，inquirer.confirm 替代 y/n
+        inquirer.prompt([
+            {
+                type: 'confirm',
+                name: 'accept',
+                message: '是否同意接收此文件?',
+                default: true,
+                transformer: () => '' // 去除 y/n 回显
+            }
+        ]).then(answer => {
+            if (answer.accept) {
+                if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+                const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
+                accept(savePath);
+                // console.log(`\n✅ 已同意接收文件，将保存到: ${savePath}`); // 去除重复输出
+            } else {
+                reject('用户拒绝接收');
+                console.log(`\n❌ 已拒绝接收文件`);
+            }
         });
     }
 
@@ -222,13 +270,13 @@ class SerialCLI {
         // 清理状态
         this._waitingForFileConfirm = false;
         this._fileConfirmData = null;
-        this.showPrompt();
     }
 
     async listPorts() {
         console.log('扫描可用串口...');
         try {
-            const ports = await SerialPort.list();
+            // 修正：serialport@10+ 用 SerialPort.SerialPort.list()
+            const ports = await SerialPort.SerialPort.list();
             if (ports.length === 0) {
                 console.log('未发现可用串口');
                 return;
@@ -244,7 +292,28 @@ class SerialCLI {
 
     async connect(port) {
         try {
-            await this.manager.connect(port);
+            let targetPort = port;
+            if (!targetPort) {
+                // 修正：serialport@10+ 用 SerialPort.SerialPort.list()
+                const ports = await SerialPort.SerialPort.list();
+                if (ports.length === 0) {
+                    console.log('未发现可用串口');
+                    return;
+                }
+                const answer = await inquirer.prompt([
+                    {
+                        type: 'list',
+                        name: 'port',
+                        message: '请选择要连接的串口:',
+                        choices: ports.map(p => ({
+                            name: `${p.path} - ${p.manufacturer || '未知设备'}`,
+                            value: p.path
+                        }))
+                    }
+                ]);
+                targetPort = answer.port;
+            }
+            await this.manager.connect(targetPort);
             // 监听原始串口数据（调试用，已注释，避免影响协议解包）
             // if (this.manager.port) {
             //     this.manager.port.on('data', (buf) => {
@@ -349,16 +418,29 @@ class SerialCLI {
      */
     async sendFileConfirm(filepath) {
         const fs = require('fs');
-        if (!filepath) {
-            console.log('请输入要发送的文件路径');
-            return;
+        let targetPath = filepath;
+        if (!targetPath) {
+            // 用 inquirer 补全文件路径
+            const answer = await inquirer.prompt([
+                {
+                    type: 'input',
+                    name: 'filepath',
+                    message: '请输入要发送的文件路径:',
+                    validate: input => {
+                        if (!input) return '文件路径不能为空';
+                        if (!fs.existsSync(input)) return '文件不存在';
+                        return true;
+                    }
+                }
+            ]);
+            targetPath = answer.filepath;
         }
         if (!this.manager.isConnected) {
             console.log('请先连接串口');
             return;
         }
         try {
-            const stat = fs.statSync(filepath);
+            const stat = fs.statSync(targetPath);
             const totalSize = stat.size;
             let lastPercent = -1;
             // 监听进度
@@ -372,7 +454,7 @@ class SerialCLI {
             };
             this.manager.on('progress', onProgress);
             // 使用需确认模式发送文件
-            await this.manager.sendFile(filepath, {}, { requireConfirm: true });
+            await this.manager.sendFile(targetPath, {}, { requireConfirm: true });
             this.manager.removeListener('progress', onProgress);
             console.log(`\n文件发送完成，总字节数: ${totalSize}`);
         } catch (e) {
@@ -393,24 +475,22 @@ class SerialCLI {
             console.log('请先连接串口');
             return;
         }
-        // 只监听一次 file 事件
-        const onFile = (buf) => {
-            fs.writeFileSync(savepath, buf);
-            console.log(`\n文件已保存到: ${savepath}，总字节数: ${buf.length}`);
-            this.manager.removeListener('file', onFile);
-        };
-        this.manager.on('file', onFile);
-        // 监听进度
-        let lastPercent = -1;
-        const onProgress = (info) => {
-            if (info.type === 'receive' && info.total) {
-                if (info.percent !== lastPercent) {
-                    process.stdout.write(`\r接收进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)}`);
-                    lastPercent = info.percent;
+        if (this._pendingReceiveFile) {
+            console.log('已有正在等待的 receivefile 操作，请稍后再试。');
+            return;
+        }
+        // 注册一次性回调
+        this._pendingReceiveFile = {
+            savepath,
+            callback: (err, path) => {
+                if (!err) {
+                    // 文件保存成功提示已在 file 事件中输出
+                } else {
+                    console.error(`[另存为] 文件保存失败: ${err.message}`);
                 }
             }
         };
-        this.manager.on('progress', onProgress);
+        // 进度监听由全局 file/progress 事件负责
         console.log('等待接收文件...');
     }
 
@@ -436,13 +516,7 @@ class SerialCLI {
 
     async quit() {
         this.manager.disconnect();
-        this.rl.close();
         process.exit(0);
-    }
-
-    showPrompt() {
-        const status = this.manager.isConnected ? '✅' : '❌';
-        process.stdout.write(`\n${status} serial-sync> `);
     }
 
     /**
@@ -459,47 +533,63 @@ class SerialCLI {
             console.log('请先连接串口');
             return;
         }
+        // 新增：输出当前关键参数
+        const config = require('config');
+        console.log('--- 当前测试环境参数 ---');
+        console.log('chunkSize:', this.manager.chunkSize);
+        console.log('timeout:', this.manager.timeout, 'ms');
+        console.log('retryAttempts:', this.manager.retryAttempts);
+        console.log('compression:', this.manager.compression ? '启用' : '关闭');
+        console.log('confirmTimeout:', this.manager.confirmTimeout, 'ms');
+        if (config.has && config.has('sync.saveDir')) {
+            console.log('saveDir:', config.get('sync.saveDir'));
+        }
+        console.log('----------------------');
         const sizes = [128, 256, 512, 1024, 2048, 4096];
         const stat = fs.statSync(filepath);
         const totalSize = stat.size;
         const origChunkSize = this.manager.chunkSize;
         const path = require('path');
-        for (const chunkSize of sizes) {
-            this.manager.chunkSize = chunkSize;
-            let lastPercent = -1;
-            let lastProgress = null;
-            let hadProgress = false;
-            const onProgress = (info) => {
-                if (info.type === 'send' && info.total) {
-                    if (info.percent !== lastPercent) {
-                        process.stdout.write(`\r[${chunkSize}] 进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)} 丢块: ${info.lostBlocks} 总重试: ${info.totalRetries}`);
-                        lastPercent = info.percent;
-                        hadProgress = true;
+        try {
+            for (const chunkSize of sizes) {
+                this.manager.chunkSize = chunkSize;
+                let lastPercent = -1;
+                let lastProgress = null;
+                let hadProgress = false;
+                const onProgress = (info) => {
+                    if (info.type === 'send' && info.total) {
+                        if (info.percent !== lastPercent) {
+                            process.stdout.write(`\r[${chunkSize}] 进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)} 丢块: ${info.lostBlocks} 总重试: ${info.totalRetries}`);
+                            lastPercent = info.percent;
+                            hadProgress = true;
+                        }
+                        lastProgress = info;
                     }
-                    lastProgress = info;
+                };
+                this.manager.on('progress', onProgress);
+                let error = null;
+                const meta = { name: path.basename(filepath) };
+                try {
+                    await this.manager.sendFile(filepath, meta);
+                } catch (e) {
+                    error = e.message;
                 }
-            };
-            this.manager.on('progress', onProgress);
-            let error = null;
-            const meta = { name: path.basename(filepath) };
-            try {
-                await this.manager.sendFile(filepath, meta);
-            } catch (e) {
-                error = e.message;
-            }
-            this.manager.removeListener('progress', onProgress);
-            if (hadProgress) process.stdout.write('\n');
-            if (error) {
-                let friendly = error;
-                if (/out of range/.test(error) && chunkSize === 128) {
-                    friendly = '分块数过多，128字节分块不被支持';
-                } else if (/块0发送失败/.test(error)) {
-                    friendly = '分块过大，链路/协议不支持';
+                this.manager.removeListener('progress', onProgress);
+                if (hadProgress) process.stdout.write('\n');
+                if (error) {
+                    let friendly = error;
+                    if (/out of range/.test(error) && chunkSize === 128) {
+                        friendly = '分块数过多，128字节分块不被支持';
+                    } else if (/块0发送失败/.test(error)) {
+                        friendly = '分块过大，链路/协议不支持';
+                    }
+                    console.log(`[${chunkSize}] 发送失败: ${friendly}`);
                 }
-                console.log(`[${chunkSize}] 发送失败: ${friendly}`);
             }
+        } finally {
+            this.manager.chunkSize = origChunkSize;
+            this.manager.removeAllListeners('progress'); // 清理所有进度监听，防止影响后续 sendfile
         }
-        this.manager.chunkSize = origChunkSize;
     }
 }
 
