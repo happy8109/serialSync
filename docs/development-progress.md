@@ -1,8 +1,9 @@
 # SerialSync 开发进度记录
 
-## 当前版本：v1.1（2024-07-11）
+## 当前版本：v1.1（2025-07-11）
 
 ### 阶段目标
+- Web UI 当前定位为“后端服务调试工具”，主要用于接口联调、功能验证、状态监控、数据回显，优先覆盖后端所有 API 能力，便于开发和测试。
 - 实现基础串口通信和文件传输功能，提升 CLI 交互体验，增强灵活性和可维护性。
 
 ### 本轮主要成果
@@ -104,4 +105,55 @@ async function sendFilesInQueue(fileList) {
 - 这样既能实现批量传输、进度统计、失败重试等高级功能，又保持底层代码简洁高效。
 
 ---
+
+## 2025-07-11 规划与设计进展补充
+
+### 1. CLI 重构与体验优化
+- CLI 交互全面重构为 inquirer 驱动，移除 readline，所有命令、参数、确认、路径输入均为交互式体验，解决输入流冲突、提示符丢失等历史问题。
+- 命令提示符动态显示当前串口状态和端口号，风格简洁。
+- 文件接收端的 y/n 确认、回显、提示符刷新等细节多次优化，最终实现体验一致、无多余回显的交互。
+- sendfile、sendfile-confirm、receivefile 命令的接收端提示信息统一，体验一致。
+- autospeed 命令在执行前自动输出当前 chunkSize、timeout、retryAttempts、compression、confirmTimeout 等关键参数，便于测试环境溯源。
+- receivefile 命令修复，实现“另存为”功能，优先于自动保存，适配未来 UI 场景。
+
+### 2. SerialManager 及协议层
+- SerialManager 作为核心，支持串口连接、断开、状态查询、短消息/文件发送、进度与异常事件、文件元数据与确认机制等接口。
+- 事件驱动架构，所有关键节点均有事件（file、fileRequest、progress、error 等），便于 CLI/UI 订阅。
+- 文件接收支持自动保存与“另存为”两种模式，进度、丢块、重试等统计信息丰富。
+- sendfile、autospeed、receivefile 等命令的健壮性和状态清理得到保证。
+- 评估认为 SerialManager 接口完整、事件丰富，完全满足下一阶段 UI 开发需求。
+
+### 3. 多文件队列与并发
+- 多文件队列/并发的实现方式：串口速率有限，无需并发，队列传输推荐由 CLI/UI/脚本层实现，SerialManager 保持单文件传输、事件驱动风格。
+- 文档中补充了多文件队列的实现建议和伪代码。
+
+### 4. 文档与项目愿景
+- docs/cli.md、docs/development-progress.md、docs/architecture.md、README.md 等文档均已补充和同步，突出：
+  - CLI inquirer 重构、receivefile 另存为、autospeed 参数提示等新特性
+  - SerialManager 接口评估与多文件队列建议
+  - 项目愿景：串口双机文件共享/同步、点对点文件/字符传输（聊天）、跨平台、无网络环境下的易用性
+- 文档结构清晰，便于团队协作和新成员上手。
+
+### 5. 后端服务与多端兼容性
+- 推荐后端采用 RESTful API + WebSocket 组合协议，兼容 Web UI、桌面应用（WinForms、Electron、Qt 等）。
+- 目录结构建议分层聚合，api/、ws/、services/、utils/ 等，避免 server.js 过于臃肿。
+- 文档中补充了后端服务协议设计、接口建议、对接注意事项和典型流程。
+
+### 6. 前端 Web UI 现状与建议
+- 已有基础的 Web UI（index.html、app.js、styles.css），支持串口连接、参数配置、数据收发、日志等。
+- 建议后续前端扩展文件传输、进度条、另存为、队列等 UI，保持与 CLI 一致的交互体验。
+- 后端需补充/完善 RESTful API 和 WebSocket 推送，覆盖所有 CLI 能力。
+
+### 7. 项目目标回归与提醒
+- 项目的根本目标是“串口双机文件共享/同步、点对点文件/字符传输（聊天）”，而不仅仅是底层协议和工具。
+- 文档和开发计划已同步突出这一愿景，后续开发应聚焦于高层应用目标。
+
+### 8. 启动与使用说明
+- 启动服务：npm install → npm run dev 或 npm start，Web UI 访问 http://localhost:3001。
+- CLI 可直接 node src/cli.js。
+- 配置、日志、文档索引等均有详细说明。
+
+---
+
+整体来看，项目已完成 CLI/协议/文档/后端服务的全面优化和规划，具备良好的多端兼容性和可维护性，为下一阶段 UI 开发和高层应用目标打下坚实基础。
 
