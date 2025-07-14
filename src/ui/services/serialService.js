@@ -23,8 +23,8 @@ function getStatus() {
 }
 
 // 连接串口
-async function connectSerial() {
-  await serialManager.connect();
+async function connectSerial(port) {
+  await serialManager.connect(port);
 }
 
 // 断开连接

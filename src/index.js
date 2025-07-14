@@ -41,33 +41,37 @@ process.on('unhandledRejection', (reason, promise) => {
 /**
  * 启动应用
  */
-async function startApp() {
+async function startApp(overridePort) {
     try {
         logger.info('正在启动 SerialSync 应用...');
         
         // 显示启动信息
-        console.log(`
-            -= SerialSync v1.0.0 串口通信同步程序 =-
-        `);
+        console.log(`\n            -= SerialSync v1.0.0 串口通信同步程序 =-\n        `);
 
         // 验证配置
-        validateConfig();
+        validateConfig(overridePort);
         
         // 启动Web服务器
         const server = new WebServer();
+        // 覆盖端口
+        if (overridePort) {
+            server.start = function() {
+                const host = config.get('server.host');
+                this.server = this.app.listen(overridePort, host, () => {
+                    logger.info(`Web服务器已启动: http://${host}:${overridePort}`);
+                });
+                process.on('SIGTERM', () => { this.gracefulShutdown(); });
+                process.on('SIGINT', () => { this.gracefulShutdown(); });
+            };
+        }
         server.start();
         
         logger.info('SerialSync 应用启动成功');
         
         // 显示访问信息
-        const port = config.get('server.port');
+        const port = overridePort || config.get('server.port');
         const host = config.get('server.host');
-        console.log(`
-🌐 Web界面: http://${host}:${port}
-📊 串口配置: ${config.get('serial.port')} @ ${config.get('serial.baudRate')}bps
-📝 日志文件: ${config.get('logging.file')}
-🔧 按 Ctrl+C 退出程序
-        `);
+        console.log(`\n🌐 Web界面: http://${host}:${port}\n📊 串口配置: ${config.get('serial.port')} @ ${config.get('serial.baudRate')}bps\n📝 日志文件: ${config.get('logging.file')}\n🔧 按 Ctrl+C 退出程序\n        `);
         
     } catch (error) {
         logger.error('应用启动失败:', error);
@@ -79,7 +83,7 @@ async function startApp() {
 /**
  * 验证配置
  */
-function validateConfig() {
+function validateConfig(overridePort) {
     try {
         // 验证串口配置
         const serialConfig = config.get('serial');
@@ -95,7 +99,8 @@ function validateConfig() {
         
         // 验证服务器配置
         const serverConfig = config.get('server');
-        if (!serverConfig.port || serverConfig.port < 1 || serverConfig.port > 65535) {
+        const port = overridePort || serverConfig.port;
+        if (!port || port < 1 || port > 65535) {
             throw new Error('服务器配置错误: 端口号无效');
         }
         
@@ -153,6 +158,8 @@ function showVersion() {
 // 命令行参数处理
 const args = process.argv.slice(2);
 
+let overridePort = null;
+
 if (args.includes('--help') || args.includes('-h')) {
     showHelp();
     process.exit(0);
@@ -163,5 +170,15 @@ if (args.includes('--version') || args.includes('-v')) {
     process.exit(0);
 }
 
+// 解析 --port 参数
+const portIndex = args.findIndex(arg => arg === '--port');
+if (portIndex !== -1 && args[portIndex + 1]) {
+    overridePort = parseInt(args[portIndex + 1], 10);
+    if (isNaN(overridePort) || overridePort < 1 || overridePort > 65535) {
+        console.error('❌ 端口号无效，请输入 1~65535 之间的数字');
+        process.exit(1);
+    }
+}
+
 // 启动应用
-startApp(); 
+startApp(overridePort); 

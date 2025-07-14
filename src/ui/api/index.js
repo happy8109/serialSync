@@ -16,7 +16,8 @@ router.get('/status', async (req, res) => {
 // 连接串口
 router.post('/connect', async (req, res) => {
   try {
-    await connectSerial();
+    const port = req.body.port;
+    await connectSerial(port);
     res.json({ success: true, message: '串口连接成功' });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
