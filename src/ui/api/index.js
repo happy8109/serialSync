@@ -1,5 +1,5 @@
 const express = require('express');
-const { getStatus, connectSerial, disconnectSerial, sendData, listPorts, updateConfig } = require('../services/serialService');
+const { getStatus, connectSerial, disconnectSerial, sendData, listPorts, updateConfig, getSerialConfig } = require('../services/serialService');
 
 const router = express.Router();
 
@@ -53,6 +53,16 @@ router.get('/ports', async (req, res) => {
   try {
     const ports = await listPorts();
     res.json({ success: true, data: ports });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 获取串口参数
+router.get('/config', async (req, res) => {
+  try {
+    const config = await getSerialConfig();
+    res.json({ success: true, data: config });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }

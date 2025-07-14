@@ -5,6 +5,7 @@ const path = require('path');
 const config = require('config');
 const { logger } = require('../utils/logger');
 const apiRouter = require('./api/index.js');
+const serialService = require('./services/serialService');
 
 class WebServer {
   constructor() {
@@ -77,6 +78,18 @@ class WebServer {
       logger.info(`Web服务器已启动: http://${host}:${port}`);
     });
 
+    this.server.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        logger.error(`端口 ${port} 已被占用，请更换端口或关闭占用进程。`);
+        console.error(`❌ 端口 ${port} 已被占用，请更换端口或关闭占用进程。`);
+        process.exit(1);
+      } else {
+        logger.error('服务器启动失败:', err);
+        console.error('❌ 服务器启动失败:', err.message);
+        process.exit(1);
+      }
+    });
+
     // 优雅关闭
     process.on('SIGTERM', () => {
       this.gracefulShutdown();
@@ -92,7 +105,13 @@ class WebServer {
    */
   async gracefulShutdown() {
     logger.info('正在关闭服务器...');
-    
+    // 关闭串口资源
+    try {
+      await serialService.closeAll();
+      logger.info('串口资源已关闭');
+    } catch (e) {
+      logger.warn('关闭串口资源时发生异常', e);
+    }
     // 关闭HTTP服务器
     if (this.server) {
       this.server.close(() => {

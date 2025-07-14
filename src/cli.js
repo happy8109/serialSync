@@ -144,56 +144,56 @@ class SerialCLI {
             if (["y", "n", "yes", "no", "是", "否"].includes(input.toLowerCase())) {
                 continue;
             }
-            const parts = input.split(' ');
-            const command = parts[0].toLowerCase();
-            const args = parts.slice(1);
-            try {
-                switch (command) {
-                    case 'list':
-                        await this.listPorts();
-                        break;
-                    case 'connect':
-                        await this.connect(args[0]);
-                        break;
-                    case 'disconnect':
-                        await this.disconnect();
-                        break;
-                    case 'send':
-                        await this.sendData(args.join(' '));
-                        break;
-                    case 'sendlarge':
-                        await this.sendLargeData(args.join(' '));
-                        break;
-                    case 'sendfile':
-                        await this.sendFile(args[0]);
-                        break;
+        const parts = input.split(' ');
+        const command = parts[0].toLowerCase();
+        const args = parts.slice(1);
+        try {
+            switch (command) {
+                case 'list':
+                    await this.listPorts();
+                    break;
+                case 'connect':
+                    await this.connect(args[0]);
+                    break;
+                case 'disconnect':
+                    await this.disconnect();
+                    break;
+                case 'send':
+                    await this.sendData(args.join(' '));
+                    break;
+                case 'sendlarge':
+                    await this.sendLargeData(args.join(' '));
+                    break;
+                case 'sendfile':
+                    await this.sendFile(args[0]);
+                    break;
                     case 'sendfile-confirm':
                         await this.sendFileConfirm(args[0]);
                         break;
-                    case 'receivefile':
-                        await this.receiveFile(args[0]);
-                        break;
-                    case 'autospeed':
-                        await this.autoSpeedTest(args[0]);
-                        break;
-                    case 'status':
-                        this.showStatus();
-                        break;
-                    case 'help':
-                        this.showHelp();
-                        break;
-                    case 'quit':
-                        await this.quit();
+                case 'receivefile':
+                    await this.receiveFile(args[0]);
+                    break;
+                case 'autospeed':
+                    await this.autoSpeedTest(args[0]);
+                    break;
+                case 'status':
+                    this.showStatus();
+                    break;
+                case 'help':
+                    this.showHelp();
+                    break;
+                case 'quit':
+                    await this.quit();
                         return;
                     case '':
-                        break;
-                    default:
-                        if (command) console.log(`未知命令: ${command}`);
-                        break;
-                }
-            } catch (error) {
-                console.error(`错误: ${error.message}`);
+                    break;
+                default:
+                    if (command) console.log(`未知命令: ${command}`);
+                    break;
             }
+        } catch (error) {
+            console.error(`错误: ${error.message}`);
+        }
         }
     }
 
@@ -551,43 +551,43 @@ class SerialCLI {
         const origChunkSize = this.manager.chunkSize;
         const path = require('path');
         try {
-            for (const chunkSize of sizes) {
-                this.manager.chunkSize = chunkSize;
-                let lastPercent = -1;
-                let lastProgress = null;
-                let hadProgress = false;
-                const onProgress = (info) => {
-                    if (info.type === 'send' && info.total) {
-                        if (info.percent !== lastPercent) {
-                            process.stdout.write(`\r[${chunkSize}] 进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)} 丢块: ${info.lostBlocks} 总重试: ${info.totalRetries}`);
-                            lastPercent = info.percent;
-                            hadProgress = true;
-                        }
-                        lastProgress = info;
+        for (const chunkSize of sizes) {
+            this.manager.chunkSize = chunkSize;
+            let lastPercent = -1;
+            let lastProgress = null;
+            let hadProgress = false;
+            const onProgress = (info) => {
+                if (info.type === 'send' && info.total) {
+                    if (info.percent !== lastPercent) {
+                        process.stdout.write(`\r[${chunkSize}] 进度: ${info.percent}% (${info.seq + 1}/${info.total}) 速率: ${this.formatSpeed(info.speed)} 丢块: ${info.lostBlocks} 总重试: ${info.totalRetries}`);
+                        lastPercent = info.percent;
+                        hadProgress = true;
                     }
-                };
-                this.manager.on('progress', onProgress);
-                let error = null;
-                const meta = { name: path.basename(filepath) };
-                try {
-                    await this.manager.sendFile(filepath, meta);
-                } catch (e) {
-                    error = e.message;
+                    lastProgress = info;
                 }
-                this.manager.removeListener('progress', onProgress);
-                if (hadProgress) process.stdout.write('\n');
-                if (error) {
-                    let friendly = error;
-                    if (/out of range/.test(error) && chunkSize === 128) {
-                        friendly = '分块数过多，128字节分块不被支持';
-                    } else if (/块0发送失败/.test(error)) {
-                        friendly = '分块过大，链路/协议不支持';
-                    }
-                    console.log(`[${chunkSize}] 发送失败: ${friendly}`);
-                }
+            };
+            this.manager.on('progress', onProgress);
+            let error = null;
+            const meta = { name: path.basename(filepath) };
+            try {
+                await this.manager.sendFile(filepath, meta);
+            } catch (e) {
+                error = e.message;
             }
+            this.manager.removeListener('progress', onProgress);
+            if (hadProgress) process.stdout.write('\n');
+            if (error) {
+                let friendly = error;
+                if (/out of range/.test(error) && chunkSize === 128) {
+                    friendly = '分块数过多，128字节分块不被支持';
+                } else if (/块0发送失败/.test(error)) {
+                    friendly = '分块过大，链路/协议不支持';
+                }
+                console.log(`[${chunkSize}] 发送失败: ${friendly}`);
+            }
+        }
         } finally {
-            this.manager.chunkSize = origChunkSize;
+        this.manager.chunkSize = origChunkSize;
             this.manager.removeAllListeners('progress'); // 清理所有进度监听，防止影响后续 sendfile
         }
     }

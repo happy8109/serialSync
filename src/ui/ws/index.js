@@ -1,8 +1,26 @@
-// WebSocket 服务预留入口
-// 可在此实现事件推送、进度、日志等
+// WebSocket 服务实现
+const WebSocket = require('ws');
+
+let wsServer = null;
 
 function initWebSocket(server) {
-  // TODO: 实现 WebSocket 服务
+  wsServer = new WebSocket.Server({ server });
+  wsServer.on('connection', (ws) => {
+    ws.on('message', (msg) => {
+      // 可扩展：处理前端发来的消息
+    });
+  });
+  return wsServer;
 }
 
-module.exports = { initWebSocket };
+function broadcast(data) {
+  if (!wsServer) return;
+  const msg = typeof data === 'string' ? data : JSON.stringify(data);
+  wsServer.clients.forEach((client) => {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(msg);
+    }
+  });
+}
+
+module.exports = { initWebSocket, broadcast };

@@ -1,5 +1,7 @@
 const { logger } = require('../../utils/logger');
 const SerialManager = require('../../core/serial/SerialManager');
+const { broadcast } = require('../ws/index');
+const config = require('config');
 
 const serialManager = new SerialManager();
 
@@ -57,11 +59,30 @@ async function updateConfig({ serial, sync }) {
   // TODO: 实现实际配置更新逻辑
 }
 
+// 获取串口参数
+function getSerialConfig() {
+  // 只返回 serial 配置部分
+  return config.get('serial');
+}
+
+// 关闭所有串口资源
+async function closeAll() {
+  if (serialManager && typeof serialManager.disconnect === 'function') {
+    try {
+      await serialManager.disconnect();
+    } catch (e) {
+      logger.warn('关闭串口资源时发生异常', e);
+    }
+  }
+}
+
 module.exports = {
   getStatus,
   connectSerial,
   disconnectSerial,
   sendData,
   listPorts,
-  updateConfig
+  updateConfig,
+  closeAll,
+  getSerialConfig
 }; 
