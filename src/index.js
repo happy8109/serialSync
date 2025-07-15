@@ -6,6 +6,7 @@
  */
 
 const config = require('config');
+const SERIALSYNC_VERSION = 'v1.2.0';
 
 // 首先创建日志目录
 const fs = require('fs');
@@ -46,7 +47,7 @@ async function startApp(overridePort) {
         logger.info('正在启动 SerialSync 应用...');
         
         // 显示启动信息
-        console.log(`\n            -= SerialSync v1.0.0 串口通信同步程序 =-\n        `);
+        console.log(`\n            -= SerialSync ${SERIALSYNC_VERSION} 串口通信同步程序 =-\n        `);
 
         // 验证配置
         validateConfig(overridePort);
@@ -159,7 +160,7 @@ SerialSync - 串口通信程序
  */
 function showVersion() {
     const packageJson = require('../package.json');
-    console.log(`SerialSync v${packageJson.version}`);
+    console.log(`SerialSync ${SERIALSYNC_VERSION}`);
     console.log(`Node.js ${process.version}`);
     console.log(`Platform ${process.platform} ${process.arch}`);
 }

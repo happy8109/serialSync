@@ -38,10 +38,23 @@ class WebServer {
     
     // 请求日志
     this.app.use((req, res, next) => {
-      logger.info(`${req.method} ${req.path}`, {
-        ip: req.ip,
-        userAgent: req.get('User-Agent')
-      });
+      // 只记录重要业务操作
+      const important = (
+        (req.method === 'POST' && (
+          req.path === '/api/connect' ||
+          req.path === '/api/disconnect' ||
+          req.path === '/api/send' ||
+          req.path === '/api/sendfile'
+        )) ||
+        (req.method === 'GET' && req.path === '/api/ports') ||
+        (req.method === 'GET' && req.path === '/api/config')
+      );
+      if (important) {
+        logger.info(`${req.method} ${req.path}`, {
+          ip: req.ip,
+          userAgent: req.get('User-Agent')
+        });
+      }
       next();
     });
   }

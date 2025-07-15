@@ -53,9 +53,7 @@ router.post('/send', async (req, res) => {
 // 文件发送接口
 router.post('/sendfile', upload.single('file'), async (req, res) => {
   try {
-    console.log('[API] /api/sendfile 被调用');
     if (!req.file) {
-      console.log('[API] 未上传文件');
       return res.status(400).json({ success: false, error: '未上传文件' });
     }
     const fileBuf = req.file.buffer;
@@ -64,7 +62,6 @@ router.post('/sendfile', upload.single('file'), async (req, res) => {
     if (/[^\x00-\x7F]/.test(fileName) || /[\x80-\xff]/.test(fileName)) {
       fileName = Buffer.from(req.file.originalname, 'latin1').toString('utf8');
     }
-    console.log('[API] 收到文件:', fileName, '大小:', fileBuf.length);
     // 发送文件，推送进度
     let lastPercent = -1;
     let lastSpeed = 0, lastLost = 0, lastRetry = 0;
@@ -79,9 +76,6 @@ router.post('/sendfile', upload.single('file'), async (req, res) => {
           lastRetry = info.totalRetries;
           // 推送到WebSocket
           const { broadcast } = require('../ws/index');
-          console.log('[API] 推送 file-progress:', {
-            percent: info.percent, speed: info.speed, lostBlocks: info.lostBlocks, totalRetries: info.totalRetries, fileName
-          });
           broadcast({
             type: 'file-progress',
             direction: 'send',
@@ -97,15 +91,12 @@ router.post('/sendfile', upload.single('file'), async (req, res) => {
     };
     const serialService = require('../services/serialService');
     serialService.serialManager.on('progress', onProgress);
-    console.log('[API] 调用 SerialManager.sendFile...');
     await serialService.serialManager.sendFile(fileBuf, meta);
     serialService.serialManager.removeListener('progress', onProgress);
-    console.log('[API] SerialManager.sendFile 完成');
     // 发送完成
     res.json({ success: true, speed: lastSpeed, lostBlocks: lastLost, totalRetries: lastRetry });
     // 推送完成事件
     const { broadcast } = require('../ws/index');
-    console.log('[API] 推送 file-progress 完成:', { fileName, lastSpeed, lastLost, lastRetry });
     broadcast({
       type: 'file-progress',
       direction: 'send',
@@ -118,7 +109,6 @@ router.post('/sendfile', upload.single('file'), async (req, res) => {
       status: 'done'
     });
   } catch (error) {
-    console.error('[API] 发送文件异常:', error);
     res.status(500).json({ success: false, error: error.message });
     // 推送错误事件
     const { broadcast } = require('../ws/index');

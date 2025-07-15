@@ -67,7 +67,6 @@ serialManager.on('error', (error) => {
 // 新增：监听文件接收进度和完成事件
 serialManager.on('progress', (info) => {
   if (info.type === 'receive') {
-    logger.info('[WS] 接收端收到 progress:', info);
     broadcast({
       type: 'file-progress',
       direction: 'receive',

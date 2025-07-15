@@ -401,7 +401,7 @@ class SerialSyncApp {
                 this.appendChatMessage(`文件已接收: ${message.fileName}，保存路径: ${message.savePath}`, 'system');
                 break;
             default:
-                console.log('[SerialSync] 未知WebSocket消息类型:', message.type);
+                // console.log('[SerialSync] 未知WebSocket消息类型:', message.type); // 删除所有 console.log
         }
     }
 
