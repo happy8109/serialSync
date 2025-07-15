@@ -5,6 +5,25 @@ const config = require('config');
 
 const serialManager = new SerialManager();
 
+const path = require('path');
+const fs = require('fs');
+
+// 监听文件请求事件，实现自动接收
+serialManager.on('fileRequest', (meta, accept, reject, options) => {
+  const requireConfirm = options && options.requireConfirm;
+  if (!requireConfirm && config.get('sync.autoAccept')) {
+    // 自动保存到配置目录
+    const saveDir = config.get('sync.saveDir') || path.join(process.cwd(), 'received_files');
+    if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+    const savePath = path.join(saveDir, meta.name || ('recv_' + Date.now()));
+    logger.info(`[WS] 自动同意接收文件: ${meta.name}, 保存到: ${savePath}`);
+    accept(savePath);
+  } else {
+    // 如需确认，可扩展为推送到前端，由前端决定是否 accept/reject
+    logger.info(`[WS] 收到需确认的文件请求: ${meta.name}`);
+  }
+});
+
 // 事件监听
 serialManager.on('connected', () => {
   logger.info('串口连接事件触发');
@@ -45,6 +64,64 @@ serialManager.on('error', (error) => {
   });
 });
 
+// 新增：监听文件接收进度和完成事件
+serialManager.on('progress', (info) => {
+  if (info.type === 'receive') {
+    logger.info('[WS] 接收端收到 progress:', info);
+    broadcast({
+      type: 'file-progress',
+      direction: 'receive',
+      percent: info.percent,
+      speed: info.speed,
+      lostBlocks: info.lostBlocks,
+      totalRetries: info.totalRetries,
+      fileName: info.fileName,
+      meta: info.meta,
+      status: info.status
+    });
+  }
+});
+
+serialManager.on('file-received', (info) => {
+  logger.info('[WS] 文件接收完成:', info);
+  broadcast({
+    type: 'file-received',
+    fileName: info.fileName,
+    savePath: info.savePath,
+    meta: info.meta
+  });
+});
+
+serialManager.on('file', (buf, meta, savePath) => {
+  try {
+    if (!savePath) {
+      const saveDir = config.get('sync.saveDir') || path.join(process.cwd(), 'received_files');
+      if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir, { recursive: true });
+      savePath = path.join(saveDir, meta && meta.name ? meta.name : ('recv_' + Date.now()));
+    }
+    fs.writeFileSync(savePath, buf);
+    logger.info(`[WS] 文件已保存到: ${savePath}`);
+    // 主动触发 file-received 事件
+    serialManager.emit('file-received', {
+      fileName: meta && meta.name,
+      savePath,
+      meta
+    });
+    // 新增：推送接收完成的 file-progress，便于前端自动隐藏进度条
+    broadcast({
+      type: 'file-progress',
+      direction: 'receive',
+      percent: 100,
+      speed: 0,
+      fileName: meta && meta.name,
+      meta,
+      status: 'done'
+    });
+  } catch (e) {
+    logger.error(`[WS] 文件保存失败: ${e.message}`);
+  }
+});
+
 // 获取连接状态
 function getStatus() {
   return serialManager.getConnectionStatus();
@@ -52,11 +129,13 @@ function getStatus() {
 
 // 连接串口
 async function connectSerial(port) {
+  logger.info(`[serialService] connectSerial 被调用, port=${port}`);
   await serialManager.connect(port);
 }
 
 // 断开连接
 async function disconnectSerial() {
+  logger.info('[serialService] disconnectSerial 被调用');
   serialManager.disconnect();
 }
 
@@ -110,5 +189,6 @@ module.exports = {
   listPorts,
   updateConfig,
   closeAll,
-  getSerialConfig
+  getSerialConfig,
+  serialManager // 导出实例
 }; 

@@ -85,9 +85,28 @@ class SerialSyncApp {
             }
         });
 
-        // 预留文件发送
+        // 发送文件
+        fileSendBtn.disabled = false;
         fileSendBtn.addEventListener('click', () => {
-            alert('文件发送功能开发中...');
+            // 创建文件选择input
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.style.display = 'none';
+            document.body.appendChild(input);
+            input.addEventListener('change', (e) => {
+                const file = input.files[0];
+                if (!file) return;
+                // 读取文件内容
+                const reader = new FileReader();
+                reader.onload = (evt) => {
+                    const fileData = evt.target.result;
+                    // 触发上传
+                    this.uploadFile(file, fileData);
+                };
+                reader.readAsArrayBuffer(file);
+            });
+            input.click();
+            setTimeout(() => document.body.removeChild(input), 1000);
         });
 
 
@@ -99,9 +118,7 @@ class SerialSyncApp {
     async loadPorts() {
         try {
             this.showLoading(true);
-            console.log('[SerialSync] 请求串口列表...');
             const response = await this.apiCall('GET', '/ports');
-            console.log('[SerialSync] 串口列表接口返回:', response);
             
             if (response.success) {
                 this.ports = response.data;
@@ -129,7 +146,6 @@ class SerialSyncApp {
         select.innerHTML = '<option value="">选择串口...</option>';
         
         // 添加串口选项
-        console.log('[SerialSync] 渲染串口下拉框:', this.ports);
         this.ports.forEach(port => {
             const option = document.createElement('option');
             option.value = port.path;
@@ -296,7 +312,6 @@ class SerialSyncApp {
             this.ws = new WebSocket(wsUrl);
             
             this.ws.onopen = () => {
-                console.log('[SerialSync] WebSocket连接已建立');
                 this.addLogEntry('WebSocket连接已建立', 'info');
             };
             
@@ -310,7 +325,6 @@ class SerialSyncApp {
             };
             
             this.ws.onclose = () => {
-                console.log('[SerialSync] WebSocket连接已关闭');
                 this.addLogEntry('WebSocket连接已关闭', 'warn');
                 // 尝试重连
                 setTimeout(() => {
@@ -353,6 +367,39 @@ class SerialSyncApp {
             case 'error':
                 this.addLogEntry(`串口错误: ${message.message}`, 'error');
                 break;
+            case 'file-progress':
+                // 文件传输进度推送
+                if (message.direction === 'send') {
+                    this.showFileProgressBar({
+                        percent: message.percent,
+                        speed: message.speed,
+                        lostBlocks: message.lostBlocks,
+                        totalRetries: message.totalRetries,
+                        status: message.status === 'error' ? (message.error || '发送失败') : (message.status === 'done' ? '发送完成' : '发送中...')
+                    });
+                    if (message.status === 'done') {
+                        this.appendFileChatMessage(message.fileName, message.meta && message.meta.savePath);
+                    } else if (message.status === 'error') {
+                        this.appendChatMessage('文件发送失败: ' + (message.error || ''), 'system');
+                    }
+                } else if (message.direction === 'receive') {
+                    // 新增：接收端进度条
+                    this.showFileProgressBar({
+                        percent: message.percent,
+                        speed: message.speed,
+                        // 丢块/重试对接收端无意义，不显示
+                        lostBlocks: undefined,
+                        totalRetries: undefined,
+                        status: message.status === 'error'
+                            ? (message.error || '接收失败')
+                            : (message.status === 'done' ? '接收完成' : '接收中...')
+                    });
+                }
+                break;
+            case 'file-received':
+                // 新增：收到文件接收完成事件
+                this.appendChatMessage(`文件已接收: ${message.fileName}，保存路径: ${message.savePath}`, 'system');
+                break;
             default:
                 console.log('[SerialSync] 未知WebSocket消息类型:', message.type);
         }
@@ -368,6 +415,26 @@ class SerialSyncApp {
         const bubble = document.createElement('div');
         bubble.className = 'chat-bubble';
         bubble.textContent = text;
+        msgDiv.appendChild(bubble);
+        chatMessages.appendChild(msgDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+    }
+
+    /**
+     * 聊天窗口插入带文件名和目录链接的消息
+     */
+    appendFileChatMessage(fileName, savePath) {
+        const chatMessages = document.getElementById('chatMessages');
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'chat-message sent';
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+        // 构造本地文件夹链接（仅本地可用，web端可提示复制路径）
+        let linkHtml = '';
+        if (savePath) {
+            linkHtml = `<a href="#" onclick="window.openFolder && window.openFolder('${savePath}')" title="打开文件夹">[打开目录]</a>`;
+        }
+        bubble.innerHTML = `文件已发送: <b>${fileName}</b> ${linkHtml ? linkHtml : ''}`;
         msgDiv.appendChild(bubble);
         chatMessages.appendChild(msgDiv);
         chatMessages.scrollTop = chatMessages.scrollHeight;
@@ -545,10 +612,93 @@ class SerialSyncApp {
             area.removeChild(div);
         }, duration);
     }
+
+    /**
+     * 上传文件到后端并显示进度条
+     */
+    async uploadFile(file, fileData) {
+        // 创建进度条UI
+        this.showFileProgressBar({ percent: 0, speed: 0, lostBlocks: 0, totalRetries: 0, status: '准备上传...' });
+        try {
+            // 构造FormData
+            const formData = new FormData();
+            formData.append('file', new Blob([fileData]), file.name);
+            // 发送请求
+            const resp = await fetch('/api/sendfile', {
+                method: 'POST',
+                body: formData
+            });
+            const result = await resp.json();
+            if (result.success) {
+                this.showFileProgressBar({ percent: 100, speed: result.speed || 0, lostBlocks: result.lostBlocks || 0, totalRetries: result.totalRetries || 0, status: '文件已发送，等待对端确认...' });
+            } else {
+                this.showFileProgressBar({ percent: 0, speed: 0, lostBlocks: 0, totalRetries: 0, status: '上传失败: ' + result.error });
+            }
+        } catch (e) {
+            console.error('[前端] /api/sendfile 异常:', e);
+            this.showFileProgressBar({ percent: 0, speed: 0, lostBlocks: 0, totalRetries: 0, status: '上传异常: ' + e.message });
+        }
+    }
+
+    /**
+     * 显示文件传输进度条
+     * @param {Object} info {percent, speed, lostBlocks, totalRetries, status}
+     */
+    showFileProgressBar(info) {
+        let bar = document.getElementById('fileProgressBar');
+        if (!bar) {
+            bar = document.createElement('div');
+            bar.id = 'fileProgressBar';
+            bar.className = 'file-progress-bar';
+            // 插入到输入框上方
+            const chatInputRow = document.querySelector('.chat-input-row');
+            chatInputRow.parentNode.insertBefore(bar, chatInputRow);
+        }
+        // 速率单位转换
+        let speedStr = '';
+        if (typeof info.speed === 'number') {
+            if (info.speed >= 1024 * 1024) {
+                speedStr = (info.speed / 1024 / 1024).toFixed(2) + ' MB/s';
+            } else if (info.speed >= 1024) {
+                speedStr = (info.speed / 1024).toFixed(2) + ' KB/s';
+            } else {
+                speedStr = info.speed + ' B/s';
+            }
+        }
+        // 只渲染有意义的字段
+        bar.innerHTML = `
+            <div class="progress-info">
+                <span>进度: ${info.percent}%</span>
+                <span>速率: ${speedStr}</span>
+                ${typeof info.lostBlocks === 'number' ? `<span>丢块: ${info.lostBlocks}</span>` : ''}
+                ${typeof info.totalRetries === 'number' ? `<span>重试: ${info.totalRetries}</span>` : ''}
+                <span>${info.status || ''}</span>
+            </div>
+            <div class="progress-bar-bg">
+                <div class="progress-bar-fg" style="width:${info.percent}%;"></div>
+            </div>
+        `;
+        // 新增：完成后自动隐藏
+        if (info.status && (info.status.includes('完成') || info.status.includes('失败'))) {
+            if (this._progressBarHideTimer) clearTimeout(this._progressBarHideTimer);
+            this._progressBarHideTimer = setTimeout(() => {
+                this.hideFileProgressBar();
+            }, 2000); // 2秒后自动隐藏
+        }
+    }
+
+    /**
+     * 隐藏文件传输进度条
+     */
+    hideFileProgressBar() {
+        const bar = document.getElementById('fileProgressBar');
+        if (bar && bar.parentNode) {
+            bar.parentNode.removeChild(bar);
+        }
+    }
 }
 
 // 启动应用，确保在 DOMContentLoaded 后实例化
 window.addEventListener('DOMContentLoaded', () => {
-    console.log('[SerialSync] DOMContentLoaded, initializing app...');
     window.serialSyncApp = new SerialSyncApp();
 });
