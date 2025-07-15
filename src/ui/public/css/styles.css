@@ -439,7 +439,7 @@ textarea.form-control {
   overflow-y: auto;
   margin-bottom: 1rem;
   padding-right: 4px;
-  font-size: 1rem;
+  font-size: 0.92rem;
 }
 .chat-message {
   margin-bottom: 0.5rem;
