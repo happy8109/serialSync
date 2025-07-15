@@ -55,10 +55,19 @@ async function startApp(overridePort) {
         const server = new WebServer();
         // 覆盖端口
         if (overridePort) {
+            const originalStart = server.start.bind(server);
             server.start = function() {
                 const host = config.get('server.host');
                 this.server = this.app.listen(overridePort, host, () => {
                     logger.info(`Web服务器已启动: http://${host}:${overridePort}`);
+                    // 初始化WebSocket服务
+                    try {
+                        const { initWebSocket } = require('./ui/ws/index');
+                        initWebSocket(this.server);
+                        logger.info('WebSocket服务已初始化');
+                    } catch (error) {
+                        logger.error('WebSocket服务初始化失败:', error);
+                    }
                 });
                 process.on('SIGTERM', () => { this.gracefulShutdown(); });
                 process.on('SIGINT', () => { this.gracefulShutdown(); });

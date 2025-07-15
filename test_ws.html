@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>WebSocket测试</title>
+</head>
+<body>
+    <h1>WebSocket连接测试</h1>
+    <div id="status">正在连接...</div>
+    <div id="messages"></div>
+    
+    <script>
+        const statusDiv = document.getElementById('status');
+        const messagesDiv = document.getElementById('messages');
+        
+        function addMessage(msg) {
+            const div = document.createElement('div');
+            div.textContent = new Date().toLocaleTimeString() + ': ' + msg;
+            messagesDiv.appendChild(div);
+        }
+        
+        try {
+            const ws = new WebSocket('ws://localhost:3000/ws');
+            
+            ws.onopen = () => {
+                statusDiv.textContent = 'WebSocket已连接';
+                statusDiv.style.color = 'green';
+                addMessage('WebSocket连接成功');
+            };
+            
+            ws.onmessage = (event) => {
+                addMessage('收到消息: ' + event.data);
+            };
+            
+            ws.onclose = () => {
+                statusDiv.textContent = 'WebSocket已断开';
+                statusDiv.style.color = 'red';
+                addMessage('WebSocket连接已关闭');
+            };
+            
+            ws.onerror = (error) => {
+                statusDiv.textContent = 'WebSocket连接失败';
+                statusDiv.style.color = 'red';
+                addMessage('WebSocket错误: ' + error);
+            };
+        } catch (error) {
+            statusDiv.textContent = 'WebSocket初始化失败';
+            statusDiv.style.color = 'red';
+            addMessage('初始化错误: ' + error.message);
+        }
+    </script>
+</body>
+</html> 

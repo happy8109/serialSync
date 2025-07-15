@@ -486,3 +486,39 @@ textarea.form-control {
   opacity: 0.5;
   cursor: not-allowed;
 } 
+
+/* 新增主内容flex布局 */
+.main-flex-row {
+  display: flex;
+  gap: 2rem;
+}
+
+.chat-panel {
+  flex: 2 1 0;
+  min-width: 340px;
+  max-width: 600px;
+}
+
+.file-panel {
+  flex: 1 1 0;
+  min-width: 240px;
+  background: #f8f8fa;
+  border-radius: 8px;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.file-placeholder {
+  color: #aaa;
+  font-size: 1.1rem;
+  margin-top: 2rem;
+  text-align: center;
+  width: 100%;
+}
+
+/* 保证日志面板不受影响 */
+.log-panel {
+  margin-top: 2rem;
+} 

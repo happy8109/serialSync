@@ -7,6 +7,7 @@ class SerialSyncApp {
         this.ports = [];
         this.logEntries = [];
         this.maxLogEntries = 100;
+        this.ws = null; // WebSocket连接
         
         this.init();
     }
@@ -20,6 +21,7 @@ class SerialSyncApp {
         await this.loadConfig(); // 新增，确保参数同步
         await this.updateStatus();
         this.startStatusPolling();
+        this.initWebSocket(); // 初始化WebSocket连接
         this.addLogEntry('应用已启动', 'info');
     }
 
@@ -64,14 +66,14 @@ class SerialSyncApp {
         sendChatBtn.addEventListener('click', async () => {
             const text = chatInput.value.trim();
             if (!text) return;
-            appendChatMessage(text, 'sent');
+            this.appendChatMessage(text, 'sent');
             chatInput.value = '';
             chatInput.focus();
             // 发送到后端
             try {
                 await this.apiCall('POST', '/send', { data: text });
             } catch (err) {
-                appendChatMessage('发送失败: ' + err.message, 'system');
+                this.appendChatMessage('发送失败: ' + err.message, 'system');
             }
         });
 
@@ -88,22 +90,7 @@ class SerialSyncApp {
             alert('文件发送功能开发中...');
         });
 
-        // 收到消息（模拟/后续可用WebSocket推送）
-        function receiveMessage(text) {
-            appendChatMessage(text, 'received');
-        }
 
-        // 聊天消息渲染
-        function appendChatMessage(text, type) {
-            const msgDiv = document.createElement('div');
-            msgDiv.className = 'chat-message ' + (type || 'sent');
-            const bubble = document.createElement('div');
-            bubble.className = 'chat-bubble';
-            bubble.textContent = text;
-            msgDiv.appendChild(bubble);
-            chatMessages.appendChild(msgDiv);
-            chatMessages.scrollTop = chatMessages.scrollHeight;
-        }
     }
 
     /**
@@ -297,6 +284,93 @@ class SerialSyncApp {
         setInterval(() => {
             this.updateStatus();
         }, 2000);
+    }
+
+    /**
+     * 初始化WebSocket连接
+     */
+    initWebSocket() {
+        try {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            this.ws = new WebSocket(wsUrl);
+            
+            this.ws.onopen = () => {
+                console.log('[SerialSync] WebSocket连接已建立');
+                this.addLogEntry('WebSocket连接已建立', 'info');
+            };
+            
+            this.ws.onmessage = (event) => {
+                try {
+                    const message = JSON.parse(event.data);
+                    this.handleWebSocketMessage(message);
+                } catch (error) {
+                    console.error('[SerialSync] WebSocket消息解析失败:', error);
+                }
+            };
+            
+            this.ws.onclose = () => {
+                console.log('[SerialSync] WebSocket连接已关闭');
+                this.addLogEntry('WebSocket连接已关闭', 'warn');
+                // 尝试重连
+                setTimeout(() => {
+                    this.initWebSocket();
+                }, 3000);
+            };
+            
+            this.ws.onerror = (error) => {
+                console.error('[SerialSync] WebSocket错误:', error);
+                this.addLogEntry('WebSocket连接错误', 'error');
+            };
+        } catch (error) {
+            console.error('[SerialSync] WebSocket初始化失败:', error);
+            this.addLogEntry('WebSocket初始化失败', 'error');
+        }
+    }
+
+    /**
+     * 处理WebSocket消息
+     */
+    handleWebSocketMessage(message) {
+        switch (message.type) {
+            case 'message':
+                if (message.direction === 'received') {
+                    this.appendChatMessage(message.data, 'received');
+                    this.addLogEntry(`收到消息: ${message.data}`, 'info');
+                }
+                break;
+            case 'connection':
+                if (message.status === 'connected') {
+                    this.isConnected = true;
+                    this.updateConnectionUI();
+                    this.addLogEntry(`串口已连接: ${message.port}`, 'success');
+                } else if (message.status === 'disconnected') {
+                    this.isConnected = false;
+                    this.updateConnectionUI();
+                    this.addLogEntry('串口已断开', 'warn');
+                }
+                break;
+            case 'error':
+                this.addLogEntry(`串口错误: ${message.message}`, 'error');
+                break;
+            default:
+                console.log('[SerialSync] 未知WebSocket消息类型:', message.type);
+        }
+    }
+
+    /**
+     * 添加聊天消息到界面
+     */
+    appendChatMessage(text, type) {
+        const chatMessages = document.getElementById('chatMessages');
+        const msgDiv = document.createElement('div');
+        msgDiv.className = 'chat-message ' + (type || 'sent');
+        const bubble = document.createElement('div');
+        bubble.className = 'chat-bubble';
+        bubble.textContent = text;
+        msgDiv.appendChild(bubble);
+        chatMessages.appendChild(msgDiv);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
     }
 
     /**

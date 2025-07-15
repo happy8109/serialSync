@@ -8,15 +8,41 @@ const serialManager = new SerialManager();
 // 事件监听
 serialManager.on('connected', () => {
   logger.info('串口连接事件触发');
+  // 推送连接状态到前端
+  broadcast({
+    type: 'connection',
+    status: 'connected',
+    port: serialManager.getConnectionStatus().port
+  });
 });
+
 serialManager.on('disconnected', () => {
   logger.info('串口断开事件触发');
+  // 推送断开状态到前端
+  broadcast({
+    type: 'connection',
+    status: 'disconnected'
+  });
 });
+
 serialManager.on('data', (data) => {
   logger.info('接收到串口数据:', data);
+  // 推送接收到的消息到前端
+  broadcast({
+    type: 'message',
+    direction: 'received',
+    data: data.toString('utf8'),
+    timestamp: new Date().toISOString()
+  });
 });
+
 serialManager.on('error', (error) => {
   logger.error('串口错误事件:', error);
+  // 推送错误信息到前端
+  broadcast({
+    type: 'error',
+    message: error.message || error.toString()
+  });
 });
 
 // 获取连接状态

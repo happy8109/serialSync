@@ -6,12 +6,15 @@ const config = require('config');
 const { logger } = require('../utils/logger');
 const apiRouter = require('./api/index.js');
 const serialService = require('./services/serialService');
+const { initWebSocket } = require('./ws/index');
 
 class WebServer {
   constructor() {
     this.app = express();
+    this.wsServer = null; // 保存WebSocket实例
     this.setupMiddleware();
     this.setupRoutes();
+    this._signalHandlersRegistered = false;
   }
 
   /**
@@ -76,6 +79,11 @@ class WebServer {
 
     this.server = this.app.listen(port, host, () => {
       logger.info(`Web服务器已启动: http://${host}:${port}`);
+      this.wsServer = initWebSocket(this.server);
+      // 设置最大监听器数，防止内存泄漏警告
+      this.server.setMaxListeners(20);
+      if (this.wsServer) this.wsServer.setMaxListeners(20);
+      logger.info('WebSocket服务已初始化');
     });
 
     this.server.on('error', (err) => {
@@ -90,14 +98,15 @@ class WebServer {
       }
     });
 
-    // 优雅关闭
-    process.on('SIGTERM', () => {
-      this.gracefulShutdown();
-    });
-
-    process.on('SIGINT', () => {
-      this.gracefulShutdown();
-    });
+    if (!this._signalHandlersRegistered) {
+      process.on('SIGTERM', () => {
+        this.gracefulShutdown();
+      });
+      process.on('SIGINT', () => {
+        this.gracefulShutdown();
+      });
+      this._signalHandlersRegistered = true;
+    }
   }
 
   /**
@@ -105,20 +114,30 @@ class WebServer {
    */
   async gracefulShutdown() {
     logger.info('正在关闭服务器...');
-    // 关闭串口资源
     try {
       await serialService.closeAll();
       logger.info('串口资源已关闭');
     } catch (e) {
       logger.warn('关闭串口资源时发生异常', e);
     }
-    // 关闭HTTP服务器
-    if (this.server) {
-      this.server.close(() => {
-        logger.info('服务器已关闭');
-        process.exit(0);
+
+    // 立即关闭所有WebSocket连接
+    if (this.wsServer) {
+      this.wsServer.clients.forEach(client => {
+        try { client.terminate(); } catch (e) {}
       });
+      try { this.wsServer.close(); } catch (e) {}
+      this.wsServer.removeAllListeners();
     }
+
+    // 立即关闭HTTP服务器
+    if (this.server) {
+      try { this.server.close(); } catch (e) {}
+      this.server.removeAllListeners();
+    }
+
+    // 立即退出
+    process.exit(0);
   }
 }
 
