@@ -109,3 +109,62 @@ SerialSync 项目有两大核心功能，所有协议、架构与实现均围绕
 - 文档和开发计划已同步突出这一愿景，后续开发应聚焦于高层应用目标。
 
 --- 
+
+---
+
+## 文件同步队列与任务管理设计（2025-07-15补充）
+
+### 1. 高层文件队列系统
+- 所有文件相关传输（同步、点对点、API/外部请求）统一纳入 FileTransferQueue 进行调度。
+- 队列支持任务入队、出队、暂停、恢复、取消，底层 SerialManager 只负责单文件传输。
+- 队列任务类型区分“同步任务”、“点对点传输”、“API请求”等。
+
+### 2. 同步任务的概念
+- 每个同步任务独立可控（新建、修改、启用、停止、删除）。
+- 任务包含：需同步的文件/文件夹路径、同步方向、同步策略、递归、排除规则、优先级、同步周期等。
+
+#### 任务数据结构示例：
+```js
+const syncTask = {
+  id: 'task1',
+  name: '文档同步',
+  enabled: true,
+  srcPath: 'D:/docs',
+  dstPath: '/mnt/docs',
+  direction: 'A->B',
+  strategy: 'mtime', // 冲突策略：以最近修改时间为准
+  recursive: true,   // 是否递归子目录
+  exclude: ['*.tmp', 'node_modules'],
+  priority: 10,      // 优先级，数值越大优先级越高
+  schedule: '0 */10 * * * *', // 同步周期，cron表达式或定时秒数
+};
+```
+
+### 3. 队列调度与优先级
+- FileTransferQueue 支持按任务优先级调度，高优先级任务先执行。
+- 支持定时/周期同步（如每10分钟自动同步），可通过 schedule 字段配置。
+- 队列可动态插入/调整任务，支持暂停/恢复/取消。
+
+### 4. 同步流程与冲突策略
+- 递归扫描目录，生成文件状态清单（含 mtime/hash/size/相对路径）。
+- 双方交换清单，比对差异，按优先级和同步周期生成同步队列。
+- 冲突处理：以最近修改日期为准，新文件覆盖旧文件。
+- 日志记录所有同步、冲突、覆盖等操作。
+
+### 5. 典型伪代码
+```js
+// 任务管理
+const syncTask = { ... };
+// 队列调度
+FileTransferQueue.enqueue({
+  type: 'sync',
+  taskId: syncTask.id,
+  file: 'D:/docs/a.txt',
+  action: 'upload',
+  priority: syncTask.priority
+});
+// 队列统一调度，按优先级和周期执行
+FileTransferQueue.processNext();
+```
+
+--- 
