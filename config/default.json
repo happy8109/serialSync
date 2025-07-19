@@ -1,6 +1,6 @@
 {
   "serial": {
-    "port": "COM2",
+    "port": "COM3",
     "baudRate": 115200,
     "dataBits": 8,
     "stopBits": 1,
@@ -19,11 +19,11 @@
   },
   "server": {
     "port": 3001,
-    "host": "localhost"
+    "host": "0.0.0.0"
   },
   "sync": {
     "chunkSize": 2048,
-    "timeout": 200,
+    "timeout": 100,
     "retryAttempts": 3,
     "compression": true,
     "autoAccept": true,

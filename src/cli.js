@@ -7,6 +7,8 @@ const SerialManager = require('./core/serial/SerialManager');
 const config = require('config');
 const inquirer = require('inquirer');
 
+const SERIALSYNC_CLI_VERSION = 'v1.2.0';
+
 class SerialCLI {
     constructor() {
         this.manager = new SerialManager();
@@ -29,10 +31,9 @@ class SerialCLI {
         this.manager.on('connected', () => {
             this._disconnectedPrinted = false;
             const status = this.manager.getConnectionStatus();
-            console.log(`✅ 串口连接成功: ${status.port}`);
         });
-        this.manager.on('error', (err) => {
-            console.error('串口错误:', err.message || err);
+        this.manager.on('error', () => {
+            // 必须有监听器，防止 Node.js 因未捕获 error 事件而崩溃
         });
         // 修正：file 事件统一分发，优先处理 receivefile
         this.manager.on('file', (buf, meta, savePath) => {
@@ -100,7 +101,7 @@ class SerialCLI {
     }
 
     async start() {
-        console.log('SerialSync CLI v1.0.0 - 串口通信命令行工具');
+        console.log(`SerialSync CLI ${SERIALSYNC_CLI_VERSION} - 串口通信命令行工具`);
         console.log('输入 "help" 查看可用命令');
         // 自动连接串口
         const portArg = process.argv[2];
@@ -314,18 +315,15 @@ class SerialCLI {
                 targetPort = answer.port;
             }
             await this.manager.connect(targetPort);
-            // 监听原始串口数据（调试用，已注释，避免影响协议解包）
-            // if (this.manager.port) {
-            //     this.manager.port.on('data', (buf) => {
-            //         console.log(`[原始接收] ${buf.toString()}`);
-            //     });
-            //     const parser = this.manager.port.pipe(new ReadlineParser({ delimiter: '\n' }));
-            //     parser.on('data', (line) => {
-            //         console.log(`[分包接收] ${line}`);
-            //     });
-            // }
+            // 新增：连接成功后输出端口和波特率
+            const status = this.manager.getConnectionStatus();
+            const baudRate = (this.manager.port && this.manager.port.baudRate) || (status && status.baudRate) || (this.manager.port && this.manager.port.settings && this.manager.port.settings.baudRate);
+            console.log(`✅ 串口连接成功: ${status.port} @ ${baudRate || '未知'} baud`);
         } catch (e) {
             console.error('连接失败:', e.message);
+            if (e && e.message && e.message.includes('error code 31')) {
+                console.error('【提示】error code 31：请检查线缆、端口占用或驱动。');
+            }
         }
     }
 

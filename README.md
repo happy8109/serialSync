@@ -21,10 +21,9 @@
 
 ```bash
 npm install
-npm run cli COM2
+npm run cli COM3
+npm run cli /dev/ttyAMA1
 node src/index.js --port 3001
-
-# 或 npm start
 ```
 
 - 配置文件：`config/default.json`

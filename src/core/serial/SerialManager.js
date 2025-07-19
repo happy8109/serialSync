@@ -87,6 +87,11 @@ class SerialManager extends EventEmitter {
       } else if (this._userPort) {
         serialConfig.port = this._userPort; // 自动重连时优先用用户端口
       }
+      // 如已有串口对象，先彻底断开并延时100ms
+      if (this.port) {
+        await this.disconnect(true);
+        await new Promise(res => setTimeout(res, 100));
+      }
       this.port = new SerialPort({
         path: serialConfig.port,
         baudRate: serialConfig.baudRate,
@@ -170,7 +175,6 @@ class SerialManager extends EventEmitter {
         });
 
         this.port.on('error', (error) => {
-          logger.error('串口连接错误:', error);
           this.isConnected = false;
           this.emit('error', error);
           reject(error);
@@ -192,7 +196,6 @@ class SerialManager extends EventEmitter {
       this.emit('disconnected');
     });
     this.port.on('error', (error) => {
-      logger.error('串口错误:', error);
       this.emit('error', error);
     });
   }
@@ -216,7 +219,6 @@ class SerialManager extends EventEmitter {
       return new Promise((resolve, reject) => {
       this.port.write(packet, (err) => {
         if (err) {
-          logger.error('数据发送失败:', err);
           this.emit('error', err);
             reject(err);
         } else {
@@ -227,7 +229,6 @@ class SerialManager extends EventEmitter {
         });
       });
     } catch (error) {
-      logger.error('数据发送异常:', error);
       return Promise.reject(error);
     }
   }
@@ -556,17 +557,37 @@ class SerialManager extends EventEmitter {
     if (this.port && this.isConnected) {
       this.port.close((error) => {
         if (error) {
-          logger.error('断开连接错误:', error);
-            reject(error);
+          reject(error);
         } else {
-          logger.info('串口连接已断开');
+            // 移除所有事件监听器并彻底清理
+            this.port.removeAllListeners && this.port.removeAllListeners();
+            this.port = null;
           this.isConnected = false;
           this.emit('disconnected');
-          // 不再自动重连，由上层业务决定
+            // 新增：尝试彻底释放serialport模块
+            try {
+              const resolved = require.resolve('serialport');
+              if (require.cache[resolved]) {
+                delete require.cache[resolved];
+              }
+            } catch (e) {
+            }
           resolve();
         }
       });
       } else {
+        if (this.port) {
+          this.port.removeAllListeners && this.port.removeAllListeners();
+          this.port = null;
+        }
+        // 新增：尝试彻底释放serialport模块
+        try {
+          const resolved = require.resolve('serialport');
+          if (require.cache[resolved]) {
+            delete require.cache[resolved];
+          }
+        } catch (e) {
+        }
         resolve();
     }
     });
