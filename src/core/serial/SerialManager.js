@@ -98,7 +98,8 @@ class SerialManager extends EventEmitter {
         dataBits: serialConfig.dataBits,
         stopBits: serialConfig.stopBits,
         parity: serialConfig.parity,
-        timeout: serialConfig.timeout
+        timeout: serialConfig.timeout,
+        rtscts: serialConfig.rtscts !== undefined ? serialConfig.rtscts : true // 从配置读取，默认true
       });
 
       // 移除 ReadlineParser，改为原始 buffer 拼包

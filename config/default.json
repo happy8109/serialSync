@@ -1,14 +1,15 @@
 {
   "serial": {
-    "port": "COM3",
-    "baudRate": 115200,
+    "port": "COM5",
+    "baudRate": 9600,
     "dataBits": 8,
     "stopBits": 1,
     "parity": "none",
     "timeout": 5000,
     "autoReconnect": true,
     "reconnectInterval": 3000,
-    "maxReconnectAttempts": 5
+    "maxReconnectAttempts": 5,
+    "rtscts": true
   },
   "logging": {
     "level": "info",
