@@ -1,7 +1,7 @@
 {
   "serial": {
-    "port": "COM5",
-    "baudRate": 9600,
+    "port": "COM3",
+    "baudRate": 460800,
     "dataBits": 8,
     "stopBits": 1,
     "parity": "none",
@@ -9,7 +9,7 @@
     "autoReconnect": true,
     "reconnectInterval": 3000,
     "maxReconnectAttempts": 5,
-    "rtscts": true
+    "rtscts": false
   },
   "logging": {
     "level": "info",
@@ -23,12 +23,12 @@
     "host": "0.0.0.0"
   },
   "sync": {
-    "chunkSize": 2048,
-    "timeout": 100,
+    "chunkSize": 32768,
+    "timeout": 50,
     "retryAttempts": 3,
     "compression": true,
     "autoAccept": true,
     "saveDir": "./received_files",
     "confirmTimeout": 30000
   }
-} 
+}

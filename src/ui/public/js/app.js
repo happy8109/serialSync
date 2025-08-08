@@ -17,8 +17,10 @@ class SerialSyncApp {
      */
     async init() {
         this.bindEvents();
+        // 首次加载时不显示错误通知
+        this._userInitiatedLoad = false;
         await this.loadPorts();
-        await this.loadConfig(); // 新增，确保参数同步
+        await this.loadConfig(); // 确保参数同步
         await this.updateStatus();
         this.startStatusPolling();
         this.initWebSocket(); // 初始化WebSocket连接
@@ -39,22 +41,25 @@ class SerialSyncApp {
             this.disconnect();
         });
 
-        // 刷新串口按钮
-        document.getElementById('refreshPortsBtn').addEventListener('click', () => {
-            this.loadPorts();
+        // 配置串口按钮
+        document.getElementById('configSerialBtn').addEventListener('click', () => {
+            console.log('配置串口按钮被点击');
+            this.showSerialConfigModal();
+        });
+        
+        // 弹窗关闭按钮
+        document.getElementById('closeSerialConfigModal').addEventListener('click', () => {
+            this.hideSerialConfigModal();
+        });
+        
+        // 弹窗表单提交
+        document.getElementById('serialConfigForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            await this.saveSerialConfig();
         });
 
-        // 串口选择变化
-        document.getElementById('portSelect').addEventListener('change', () => {
-            this.updateConfig();
-        });
-
-        // 配置变化
-        ['baudRate', 'dataBits', 'stopBits', 'parity'].forEach(id => {
-            document.getElementById(id).addEventListener('change', () => {
-                this.updateConfig();
-            });
-        });
+        // Tab切换功能
+        this.bindTabEvents();
 
         // 聊天窗口相关逻辑
         const chatMessages = document.getElementById('chatMessages');
@@ -108,8 +113,31 @@ class SerialSyncApp {
             input.click();
             setTimeout(() => document.body.removeChild(input), 1000);
         });
+    }
 
-
+    /**
+     * 绑定Tab切换事件
+     */
+    bindTabEvents() {
+        const tabBtns = document.querySelectorAll('.tab-btn');
+        const tabContents = document.querySelectorAll('.tab-content');
+        
+        tabBtns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                const targetTab = btn.getAttribute('data-tab');
+                
+                // 移除所有active类
+                tabBtns.forEach(b => b.classList.remove('active'));
+                tabContents.forEach(c => c.classList.remove('active'));
+                
+                // 添加active类到当前tab
+                btn.classList.add('active');
+                const targetContent = document.getElementById(targetTab + '-tab');
+                if (targetContent) {
+                    targetContent.classList.add('active');
+                }
+            });
+        });
     }
 
     /**
@@ -128,8 +156,12 @@ class SerialSyncApp {
                 throw new Error(response.error);
             }
         } catch (error) {
+            // 只在日志中记录错误，不显示通知（避免首次加载时的干扰）
             this.addLogEntry(`加载串口列表失败: ${error.message}`, 'error');
+            // 只有在用户主动点击"配置串口"时才显示错误通知
+            if (this._userInitiatedLoad) {
             this.showNotification('加载串口列表失败', 'error');
+            }
         } finally {
             this.showLoading(false);
         }
@@ -165,9 +197,10 @@ class SerialSyncApp {
     async connect() {
         try {
             this.showLoading(true);
-            const port = document.getElementById('portSelect').value;
-            if (!port) {
-                this.showNotification('请选择串口', 'warn');
+            // 从主界面显示中获取当前配置的串口号
+            const port = document.getElementById('portInfo').textContent;
+            if (!port || port === '-') {
+                this.showNotification('请先配置串口参数', 'warn');
                 return;
             }
             const response = await this.apiCall('POST', '/connect', { port });
@@ -280,16 +313,18 @@ class SerialSyncApp {
                 this.connectionStatus = response.data;
                 this.isConnected = response.data.isConnected;
                 
-                // 更新UI
-                document.getElementById('portInfo').textContent = response.data.port || '-';
-                document.getElementById('speedInfo').textContent =
-                    (response.data.speed ? response.data.speed + ' B/s' : '-');
-                document.getElementById('taskInfo').textContent =
-                    response.data.currentTask || '-';
+                // 更新UI - 只在连接状态下更新串口信息，避免覆盖配置文件中的参数
+                const portInfo = document.getElementById('portInfo');
+                
+                if (response.data.isConnected && portInfo) {
+                    portInfo.textContent = response.data.port || '-';
+                }
+                
                 this.updateConnectionUI();
             }
         } catch (error) {
             console.error('更新状态失败:', error);
+            this.addLogEntry('更新状态失败: ' + error.message, 'error');
         }
     }
 
@@ -476,14 +511,89 @@ class SerialSyncApp {
             const response = await this.apiCall('GET', '/config');
             if (response.success && response.data) {
                 const cfg = response.data;
-                if (cfg.port) document.getElementById('portSelect').value = cfg.port;
-                if (cfg.baudRate) document.getElementById('baudRate').value = cfg.baudRate;
-                if (cfg.dataBits) document.getElementById('dataBits').value = cfg.dataBits;
-                if (cfg.stopBits) document.getElementById('stopBits').value = cfg.stopBits;
-                if (cfg.parity) document.getElementById('parity').value = cfg.parity;
+                // 更新主界面显示 - 只保留最重要的四个参数
+                const elements = {
+                    portInfo: document.getElementById('portInfo'),
+                    baudRateInfo: document.getElementById('baudRateInfo'),
+                    chunkSizeInfo: document.getElementById('chunkSizeInfo')
+                };
+                
+                // 串口基本参数
+                if (elements.portInfo) elements.portInfo.textContent = cfg.port || '-';
+                if (elements.baudRateInfo) elements.baudRateInfo.textContent = cfg.baudRate || '-';
+                
+                // 文件传输参数
+                if (elements.chunkSizeInfo) elements.chunkSizeInfo.textContent = cfg.chunkSize ? this._formatChunkSize(cfg.chunkSize) : '-';
+                
+                // 更新弹窗表单（仅在弹窗打开时更新）
+                const modalElements = {
+                    portSelect: document.getElementById('modalPortSelect'),
+                    baudRate: document.getElementById('modalBaudRate'),
+                    dataBits: document.getElementById('modalDataBits'),
+                    stopBits: document.getElementById('modalStopBits'),
+                    parity: document.getElementById('modalParity'),
+                    chunkSize: document.getElementById('modalChunkSize'),
+                    timeout: document.getElementById('modalTimeout'),
+                    retryAttempts: document.getElementById('modalRetryAttempts'),
+                    compression: document.getElementById('modalCompression'),
+                    autoAccept: document.getElementById('modalAutoAccept')
+                };
+                
+                // 串口基本参数
+                if (modalElements.portSelect && cfg.port) modalElements.portSelect.value = cfg.port;
+                if (modalElements.baudRate && cfg.baudRate) modalElements.baudRate.value = cfg.baudRate;
+                if (modalElements.dataBits && cfg.dataBits) modalElements.dataBits.value = cfg.dataBits;
+                if (modalElements.stopBits && cfg.stopBits) modalElements.stopBits.value = cfg.stopBits;
+                if (modalElements.parity && cfg.parity) modalElements.parity.value = cfg.parity;
+                
+                // 文件传输参数
+                if (modalElements.chunkSize && cfg.chunkSize) modalElements.chunkSize.value = cfg.chunkSize;
+                if (modalElements.timeout && cfg.timeout) modalElements.timeout.value = cfg.timeout;
+                if (modalElements.retryAttempts && cfg.retryAttempts !== undefined) modalElements.retryAttempts.value = cfg.retryAttempts;
+                if (modalElements.compression && cfg.compression !== undefined) modalElements.compression.value = cfg.compression.toString();
+                if (modalElements.autoAccept && cfg.autoAccept !== undefined) modalElements.autoAccept.value = cfg.autoAccept.toString();
+                
+                this.addLogEntry('串口参数已加载', 'info');
             }
         } catch (e) {
+            console.error('加载串口参数失败:', e);
             this.addLogEntry('加载串口参数失败: ' + e.message, 'error');
+        }
+    }
+
+    /**
+     * 获取校验位的显示文本
+     */
+    _getParityText(parity) {
+        const parityMap = {
+            'none': '无',
+            'even': '偶校验',
+            'odd': '奇校验'
+        };
+        return parityMap[parity] || parity;
+    }
+
+    /**
+     * 格式化数据块大小显示
+     */
+    _formatChunkSize(bytes) {
+        if (bytes >= 1024 * 1024) {
+            return (bytes / 1024 / 1024).toFixed(1) + 'MB';
+        } else if (bytes >= 1024) {
+            return (bytes / 1024).toFixed(1) + 'KB';
+        } else {
+            return bytes + 'B';
+        }
+    }
+
+    /**
+     * 格式化超时时间显示
+     */
+    _formatTimeout(ms) {
+        if (ms >= 1000) {
+            return (ms / 1000).toFixed(1) + 's';
+        } else {
+            return ms + 'ms';
         }
     }
 
@@ -694,6 +804,95 @@ class SerialSyncApp {
         const bar = document.getElementById('fileProgressBar');
         if (bar && bar.parentNode) {
             bar.parentNode.removeChild(bar);
+        }
+    }
+
+    async showSerialConfigModal() {
+        console.log('showSerialConfigModal 被调用');
+        try {
+            // 加载可用串口列表
+            const modalPortSelect = document.getElementById('modalPortSelect');
+            if (!modalPortSelect) {
+                console.error('modalPortSelect 元素未找到');
+                return;
+            }
+            modalPortSelect.innerHTML = '';
+            if (!this.ports || this.ports.length === 0) {
+                // 设置用户主动加载标志
+                this._userInitiatedLoad = true;
+                await this.loadPorts();
+                this._userInitiatedLoad = false;
+            }
+            this.ports.forEach(port => {
+                const option = document.createElement('option');
+                option.value = port.path;
+                option.textContent = `${port.path} - ${port.manufacturer || '未知设备'}`;
+                modalPortSelect.appendChild(option);
+            });
+            // 加载当前配置
+            const resp = await this.apiCall('GET', '/config');
+            if (resp.success && resp.data) {
+                const cfg = resp.data;
+                // 串口基本参数
+                if (cfg.port) modalPortSelect.value = cfg.port;
+                if (cfg.baudRate) document.getElementById('modalBaudRate').value = cfg.baudRate;
+                if (cfg.dataBits) document.getElementById('modalDataBits').value = cfg.dataBits;
+                if (cfg.stopBits) document.getElementById('modalStopBits').value = cfg.stopBits;
+                if (cfg.parity) document.getElementById('modalParity').value = cfg.parity;
+                
+                // 文件传输参数
+                if (cfg.chunkSize) document.getElementById('modalChunkSize').value = cfg.chunkSize;
+                if (cfg.timeout) document.getElementById('modalTimeout').value = cfg.timeout;
+                if (cfg.retryAttempts !== undefined) document.getElementById('modalRetryAttempts').value = cfg.retryAttempts;
+                if (cfg.compression !== undefined) document.getElementById('modalCompression').value = cfg.compression.toString();
+                if (cfg.autoAccept !== undefined) document.getElementById('modalAutoAccept').value = cfg.autoAccept.toString();
+            }
+            const modal = document.getElementById('serialConfigModal');
+            if (modal) {
+                modal.style.display = 'flex';
+                console.log('弹窗已显示');
+                // 重新绑定tab事件
+                this.bindTabEvents();
+            } else {
+                console.error('serialConfigModal 元素未找到');
+            }
+        } catch (error) {
+            console.error('显示弹窗时出错:', error);
+        }
+    }
+
+    hideSerialConfigModal() {
+        document.getElementById('serialConfigModal').style.display = 'none';
+    }
+
+    async saveSerialConfig() {
+        const serial = {
+            port: document.getElementById('modalPortSelect').value,
+            baudRate: parseInt(document.getElementById('modalBaudRate').value),
+            dataBits: parseInt(document.getElementById('modalDataBits').value),
+            stopBits: parseInt(document.getElementById('modalStopBits').value),
+            parity: document.getElementById('modalParity').value
+        };
+        
+        const sync = {
+            chunkSize: parseInt(document.getElementById('modalChunkSize').value),
+            timeout: parseInt(document.getElementById('modalTimeout').value),
+            retryAttempts: parseInt(document.getElementById('modalRetryAttempts').value),
+            compression: document.getElementById('modalCompression').value === 'true',
+            autoAccept: document.getElementById('modalAutoAccept').value === 'true'
+        };
+        
+        try {
+            const resp = await this.apiCall('PUT', '/config', { serial, sync });
+            if (resp.success) {
+                this.showNotification('串口参数已保存', 'success');
+                this.hideSerialConfigModal();
+                await this.loadConfig();
+            } else {
+                this.showNotification('保存失败: ' + resp.error, 'error');
+            }
+        } catch (e) {
+            this.showNotification('保存失败: ' + e.message, 'error');
         }
     }
 }

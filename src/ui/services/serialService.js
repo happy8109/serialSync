@@ -157,16 +157,78 @@ async function listPorts() {
   }));
 }
 
-// 更新配置（示例，实际可扩展）
+// 更新配置（实现写入 config/default.json 并重新应用配置）
 async function updateConfig({ serial, sync }) {
   logger.info('配置更新请求', { serial, sync });
-  // TODO: 实现实际配置更新逻辑
+  const configPath = require('path').join(process.cwd(), 'config', 'default.json');
+  const fs = require('fs');
+  let configObj = {};
+  try {
+    configObj = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch (e) {
+    logger.error('读取配置文件失败', e);
+    throw new Error('读取配置文件失败');
+  }
+  if (serial) {
+    configObj.serial = { ...configObj.serial, ...serial };
+  }
+  if (sync) {
+    configObj.sync = { ...configObj.sync, ...sync };
+  }
+  try {
+    fs.writeFileSync(configPath, JSON.stringify(configObj, null, 2), 'utf-8');
+    logger.info('配置文件已更新');
+
+    // 如果当前已连接，则需要断开重连以应用新配置
+    const wasConnected = serialManager.isConnected;
+    const currentPort = serialManager._currentPort;
+    
+    if (wasConnected) {
+      logger.info('断开当前连接以应用新配置');
+      await serialManager.disconnect();
+      
+      // 等待一小段时间确保端口完全释放
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      // 使用新配置重新连接
+      logger.info('使用新配置重新连接');
+      try {
+        await serialManager.connect(currentPort);
+        logger.info('使用新配置重新连接成功');
+      } catch (err) {
+        logger.error('使用新配置重新连接失败:', err);
+        throw new Error('使用新配置重新连接失败: ' + err.message);
+      }
+    } else {
+      // 即使没有连接，也要确保配置已更新
+      logger.info('配置已更新，下次连接时将使用新配置');
+    }
+  } catch (e) {
+    logger.error('配置更新失败', e);
+    throw new Error('配置更新失败: ' + e.message);
+  }
 }
 
 // 获取串口参数
 function getSerialConfig() {
-  // 只返回 serial 配置部分
-  return config.get('serial');
+  // 重新读取配置文件，而不是使用缓存的配置
+  const fs = require('fs');
+  const configPath = require('path').join(process.cwd(), 'config', 'default.json');
+  try {
+    const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    // 返回完整的配置信息，包括serial和sync
+    return {
+      ...configData.serial,
+      ...configData.sync
+    };
+  } catch (e) {
+    logger.error('读取配置文件失败，使用缓存配置', e);
+    // 如果读取失败，回退到 config 模块
+    return {
+      ...config.get('serial'),
+      ...config.get('sync')
+    };
+  }
 }
 
 // 关闭所有串口资源

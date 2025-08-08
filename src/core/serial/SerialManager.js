@@ -80,7 +80,27 @@ class SerialManager extends EventEmitter {
    */
   async connect(portOverride) {
     try {
-      const serialConfig = { ...config.get('serial') };
+      // 重新读取配置文件，而不是使用缓存的配置
+      const fs = require('fs');
+      const configPath = require('path').join(process.cwd(), 'config', 'default.json');
+      let serialConfig, syncConfig;
+      try {
+        const configData = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+        serialConfig = { ...configData.serial };
+        syncConfig = { ...configData.sync };
+      } catch (e) {
+        // 如果读取失败，回退到 config 模块
+        serialConfig = { ...config.get('serial') };
+        syncConfig = { ...config.get('sync') };
+      }
+      
+      // 更新实例的配置参数
+      this.chunkSize = syncConfig.chunkSize || config.get('sync.chunkSize');
+      this.timeout = syncConfig.timeout || config.get('sync.timeout');
+      this.retryAttempts = syncConfig.retryAttempts || config.get('sync.retryAttempts');
+      this.compression = syncConfig.compression !== undefined ? syncConfig.compression : config.get('sync.compression');
+      this.confirmTimeout = syncConfig.confirmTimeout || config.get('sync.confirmTimeout', 30000);
+      
       if (portOverride) {
         serialConfig.port = portOverride;
         this._userPort = portOverride; // 记住用户指定端口

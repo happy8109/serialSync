@@ -32,58 +32,12 @@
                         <span class="value" id="portInfo">-</span>
                     </div>
                     <div class="status-item">
-                        <span class="label">速率:</span>
-                        <span class="value" id="speedInfo">-</span>
+                        <span class="label">波特率:</span>
+                        <span class="value" id="baudRateInfo">-</span>
                     </div>
                     <div class="status-item">
-                        <span class="label">当前任务:</span>
-                        <span class="value" id="taskInfo">-</span>
-                    </div>
-                </div>
-
-                <div class="config-form" style="margin-top: 1em;">
-                    <div class="form-row">
-                        <div class="form-group">
-                            <label for="portSelect">串口:</label>
-                            <select id="portSelect" class="form-control">
-                                <option value="">选择串口...</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="baudRate">波特率:</label>
-                            <select id="baudRate" class="form-control">
-                                <option value="9600">9600</option>
-                                <option value="19200">19200</option>
-                                <option value="38400">38400</option>
-                                <option value="57600">57600</option>
-                                <option value="115200" selected>115200</option>
-                                <option value="230400">230400</option>
-                                <option value="460800">460800</option>
-                                <option value="921600">921600</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="dataBits">数据位:</label>
-                            <select id="dataBits" class="form-control">
-                                <option value="7">7</option>
-                                <option value="8" selected>8</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="stopBits">停止位:</label>
-                            <select id="stopBits" class="form-control">
-                                <option value="1" selected>1</option>
-                                <option value="2">2</option>
-                            </select>
-                        </div>
-                        <div class="form-group">
-                            <label for="parity">校验位:</label>
-                            <select id="parity" class="form-control">
-                                <option value="none" selected>无</option>
-                                <option value="even">偶校验</option>
-                                <option value="odd">奇校验</option>
-                            </select>
-                        </div>
+                        <span class="label">数据块大小:</span>
+                        <span class="value" id="chunkSizeInfo">-</span>
                     </div>
                 </div>
                 <div class="form-group">
@@ -95,30 +49,43 @@
                         <button id="disconnectBtn" class="btn btn-danger" disabled>
                             <i class="fas fa-unlink"></i> 断开
                         </button>
-                        <button id="refreshPortsBtn" class="btn btn-secondary">
-                            <i class="fas fa-sync-alt"></i> 刷新串口
+                        <button id="configSerialBtn" class="btn btn-secondary">
+                            <i class="fas fa-cog"></i> 配置串口
                         </button>
                     </div>
                 </div>
             </section>
 
-            <!-- 聊天窗口式字符/文件传输面板 -->
-            <section class="panel chat-panel">
-                <h2><i class="fas fa-comments"></i> 聊天/字符&文件传输</h2>
-                <div class="chat-container">
-                    <div id="chatMessages" class="chat-messages"></div>
-                    <div class="chat-input-row">
-                        <input id="chatInput" class="form-control chat-input" type="text" placeholder="输入消息..."
-                            autocomplete="off">
-                        <button id="sendChatBtn" class="btn btn-success chat-send-btn">
-                            <i class="fas fa-paper-plane"></i> 发送
-                        </button>
-                        <button id="fileSendBtn" class="btn btn-secondary chat-file-btn" title="发送文件（开发中）" disabled>
-                            <i class="fas fa-file-upload"></i>
-                        </button>
+            <!-- 聊天和文件同步面板容器 -->
+            <div class="panels-flex-container">
+                <!-- 聊天窗口式字符/文件传输面板 -->
+                <section class="panel chat-panel">
+                    <h2><i class="fas fa-comments"></i> 字符传输&文件传输</h2>
+                    <div class="chat-container">
+                        <div id="chatMessages" class="chat-messages"></div>
+                        <div class="chat-input-row">
+                            <input id="chatInput" class="form-control chat-input" type="text" placeholder="输入消息..."
+                                autocomplete="off">
+                            <button id="sendChatBtn" class="btn btn-success chat-send-btn">
+                                <i class="fas fa-paper-plane"></i> 发送信息
+                            </button>
+                            <button id="fileSendBtn" class="btn btn-secondary chat-file-btn">
+                                <i class="fas fa-file-upload"></i> 文件传输
+                            </button>
+                        </div>
                     </div>
-                </div>
-            </section>
+                </section>
+
+                <!-- 文件同步面板 -->
+                <section class="panel sync-panel">
+                    <h2><i class="fas fa-sync-alt"></i> 文件同步</h2>
+                    <div class="sync-container">
+                        <div class="sync-status">
+                            <p>文件同步功能开发中...</p>
+                        </div>
+                    </div>
+                </section>
+            </div>
 
             <!-- 日志面板 -->
             <section class="panel log-panel">
@@ -150,6 +117,108 @@
             <i class="fas fa-spinner fa-spin"></i>
             <span>处理中...</span>
         </div>
+    </div>
+
+    <!-- 串口参数配置弹窗 -->
+    <div id="serialConfigModal" class="modal" style="display:none;">
+      <div class="modal-content">
+        <span class="close" id="closeSerialConfigModal">&times;</span>
+        <h3>串口参数配置</h3>
+        
+        <!-- Tab导航 -->
+        <div class="tab-nav">
+          <button class="tab-btn active" data-tab="serial">串口基本参数</button>
+          <button class="tab-btn" data-tab="sync">文件传输参数</button>
+        </div>
+        
+        <form id="serialConfigForm">
+          <!-- 串口基本参数 Tab -->
+          <div class="tab-content active" id="serial-tab">
+            <div class="form-group">
+              <label for="modalPortSelect">串口号:</label>
+              <select id="modalPortSelect" class="form-control"></select>
+            </div>
+            <div class="form-group">
+              <label for="modalBaudRate">波特率:</label>
+              <select id="modalBaudRate" class="form-control">
+                <option value="9600">9600</option>
+                <option value="19200">19200</option>
+                <option value="38400">38400</option>
+                <option value="57600">57600</option>
+                <option value="115200">115200</option>
+                <option value="230400">230400</option>
+                <option value="460800">460800</option>
+                <option value="921600">921600</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="modalDataBits">数据位:</label>
+              <select id="modalDataBits" class="form-control">
+                <option value="7">7</option>
+                <option value="8">8</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="modalStopBits">停止位:</label>
+              <select id="modalStopBits" class="form-control">
+                <option value="1">1</option>
+                <option value="2">2</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="modalParity">校验位:</label>
+              <select id="modalParity" class="form-control">
+                <option value="none">无</option>
+                <option value="even">偶校验</option>
+                <option value="odd">奇校验</option>
+              </select>
+            </div>
+          </div>
+          
+          <!-- 文件传输参数 Tab -->
+          <div class="tab-content" id="sync-tab">
+            <div class="form-group">
+              <label for="modalChunkSize">数据块大小 (字节):</label>
+              <select id="modalChunkSize" class="form-control">
+                <option value="1024">1KB</option>
+                <option value="2048">2KB</option>
+                <option value="4096">4KB</option>
+                <option value="8192">8KB</option>
+                <option value="16384">16KB</option>
+                <option value="32768">32KB</option>
+                <option value="65536">64KB</option>
+                <option value="131072">128KB</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="modalTimeout">超时时间 (毫秒):</label>
+              <input type="number" id="modalTimeout" class="form-control" min="10" max="10000" step="10">
+            </div>
+            <div class="form-group">
+              <label for="modalRetryAttempts">重试次数:</label>
+              <input type="number" id="modalRetryAttempts" class="form-control" min="0" max="10" step="1">
+            </div>
+            <div class="form-group">
+              <label for="modalCompression">启用压缩:</label>
+              <select id="modalCompression" class="form-control">
+                <option value="true">是</option>
+                <option value="false">否</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="modalAutoAccept">自动接收文件:</label>
+              <select id="modalAutoAccept" class="form-control">
+                <option value="true">是</option>
+                <option value="false">否</option>
+              </select>
+            </div>
+          </div>
+          
+          <div class="form-group" style="margin-top:1em;">
+            <button type="submit" class="btn btn-primary">保存</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <script src="js/app.js"></script>
