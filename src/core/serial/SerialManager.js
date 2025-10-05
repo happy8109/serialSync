@@ -17,7 +17,16 @@ const zlib = require('zlib');
  */
 
 // 包类型常量
-const PKG_TYPE = { DATA: 0x01, ACK: 0x02, RETRY: 0x03, FILE_REQ: 0x10, FILE_ACCEPT: 0x11, FILE_REJECT: 0x12 };
+const PKG_TYPE = { 
+  DATA: 0x01, 
+  ACK: 0x02, 
+  RETRY: 0x03, 
+  FILE_REQ: 0x10, 
+  FILE_ACCEPT: 0x11, 
+  FILE_REJECT: 0x12,
+  PULL_REQUEST: 0x20,
+  PULL_RESPONSE: 0x21
+};
 
 /**
  * 串口协议说明：
@@ -70,6 +79,14 @@ class SerialManager extends EventEmitter {
     this._fileSessions = {}; // { reqId: { meta, savePath, chunks: {}, total, startTime } }
     this._userPort = null; // 记住用户指定端口
     this._currentPort = null; // 记录当前实际连接端口
+    
+    // 拉式数据传输相关
+    this.localServices = new Map(); // 本地服务注册表
+    this.pendingRequests = new Map(); // 待响应的请求 { requestId: { resolve, reject, timeout } }
+    this.pullRequestHandler = null; // 拉取请求处理函数
+    
+    // 从配置文件加载服务
+    this.loadServicesFromConfig();
   }
 
   /**
@@ -538,11 +555,30 @@ class SerialManager extends EventEmitter {
         const valid = this.calcChecksum(dataPart) === checksum;
         if (valid) {
           let processed = dataPart;
-    if (this.compression) {
+          if (this.compression) {
             try { processed = zlib.inflateSync(dataPart); } catch (e) { logger.warn('数据解压缩失败:', e); }
-    }
-    logger.info(`接收到短包数据: ${processed.length} 字节`);
-    this.emit('data', processed);
+          }
+          
+          // 尝试解析为JSON消息（拉取请求/响应）
+          try {
+            const jsonStr = processed.toString('utf8');
+            const jsonData = JSON.parse(jsonStr);
+            
+            if (jsonData.type === 'PULL_REQUEST') {
+              logger.info(`接收到拉取请求: ${jsonData.serviceId}`);
+              this.handlePullRequest(jsonData);
+              return;
+            } else if (jsonData.type === 'PULL_RESPONSE') {
+              logger.info(`接收到拉取响应: ${jsonData.requestId}`);
+              this.handlePullResponse(jsonData);
+              return;
+            }
+          } catch (e) {
+            // 不是JSON消息，按普通数据处理
+          }
+          
+          logger.info(`接收到短包数据: ${processed.length} 字节`);
+          this.emit('data', processed);
           this.sendAcknowledgment && this.sendAcknowledgment();
         }
       }
@@ -841,6 +877,319 @@ class SerialManager extends EventEmitter {
       };
       this.on('_ack', onAck);
     });
+  }
+
+  // ==================== 拉式数据传输功能 ====================
+
+  /**
+   * 从配置文件加载服务
+   */
+  loadServicesFromConfig() {
+    try {
+      const servicesConfig = config.get('services', {});
+      
+      if (!servicesConfig.enabled) {
+        logger.info('服务功能已禁用');
+        return;
+      }
+
+      if (!servicesConfig.autoRegister) {
+        logger.info('自动注册服务已禁用');
+        return;
+      }
+
+      const localServices = servicesConfig.localServices || {};
+      
+      for (const [serviceId, serviceConfig] of Object.entries(localServices)) {
+        if (serviceConfig.enabled !== false) {
+          this.registerLocalServiceFromConfig(serviceId, serviceConfig);
+        }
+      }
+      
+      logger.info(`从配置文件加载了 ${Object.keys(localServices).length} 个服务`);
+    } catch (error) {
+      logger.warn('从配置文件加载服务失败:', error.message);
+    }
+  }
+
+  /**
+   * 从配置注册本地服务
+   * @param {string} serviceId - 服务ID
+   * @param {Object} serviceConfig - 服务配置
+   */
+  registerLocalServiceFromConfig(serviceId, serviceConfig) {
+    this.localServices.set(serviceId, {
+      id: serviceId,
+      name: serviceConfig.name,
+      description: serviceConfig.description,
+      version: serviceConfig.version || '1.0',
+      type: serviceConfig.type || 'http',
+      endpoint: serviceConfig.endpoint,
+      method: serviceConfig.method || 'GET',
+      timeout: serviceConfig.timeout || config.get('services.defaultTimeout', 30000),
+      defaultParams: serviceConfig.defaultParams || {},
+      enabled: serviceConfig.enabled !== false,
+      registeredAt: Date.now(),
+      fromConfig: true
+    });
+    
+    logger.info(`从配置注册服务: ${serviceId} - ${serviceConfig.name}`);
+  }
+
+  /**
+   * 注册本地服务
+   * @param {string} serviceId - 服务ID
+   * @param {Object} metadata - 服务元数据
+   * @param {string} metadata.name - 服务名称
+   * @param {string} metadata.description - 服务描述
+   * @param {string} metadata.version - 服务版本
+   * @param {string} metadata.endpoint - HTTP端点（可选）
+   */
+  registerLocalService(serviceId, metadata) {
+    this.localServices.set(serviceId, {
+      id: serviceId,
+      name: metadata.name,
+      description: metadata.description,
+      version: metadata.version || '1.0',
+      type: metadata.type || 'http',
+      endpoint: metadata.endpoint,
+      method: metadata.method || 'GET',
+      timeout: metadata.timeout || config.get('services.defaultTimeout', 30000),
+      defaultParams: metadata.defaultParams || {},
+      enabled: metadata.enabled !== false,
+      registeredAt: Date.now(),
+      fromConfig: false
+    });
+    
+    logger.info(`本地服务已注册: ${serviceId} - ${metadata.name}`);
+  }
+
+  /**
+   * 获取本地服务列表
+   * @returns {Array} 服务列表
+   */
+  getLocalServices() {
+    return Array.from(this.localServices.values());
+  }
+
+  /**
+   * 检查服务是否存在
+   * @param {string} serviceId - 服务ID
+   * @returns {boolean} 是否存在
+   */
+  hasLocalService(serviceId) {
+    return this.localServices.has(serviceId);
+  }
+
+  /**
+   * 拉取对端数据
+   * @param {string} serviceId - 服务ID
+   * @param {Object} params - 请求参数
+   * @returns {Promise<any>} 响应数据
+   */
+  async pullData(serviceId, params = {}) {
+    if (!this.isConnected) {
+      throw new Error('串口未连接');
+    }
+
+    const requestId = this.generateRequestId();
+    const request = {
+      type: 'PULL_REQUEST',
+      requestId,
+      serviceId,
+      params
+    };
+
+    // 发送请求到对端
+    await this.sendData(JSON.stringify(request));
+
+    // 等待响应
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        reject(new Error('Request timeout'));
+      }, 30000); // 30秒超时
+
+      this.pendingRequests.set(requestId, {
+        resolve,
+        reject,
+        timeout
+      });
+    });
+  }
+
+  /**
+   * 注册拉取请求处理函数
+   * @param {Function} handler - 处理函数 (serviceId, params) => Promise<any>
+   */
+  onPullRequest(handler) {
+    this.pullRequestHandler = handler;
+  }
+
+  /**
+   * 生成请求ID
+   * @returns {string} 请求ID
+   */
+  generateRequestId() {
+    return Date.now().toString(36) + Math.random().toString(36).substr(2);
+  }
+
+  /**
+   * 调用HTTP服务
+   * @param {string} endpoint - HTTP端点
+   * @param {Object} params - 请求参数
+   * @param {Object} options - 请求选项
+   * @returns {Promise<string>} 响应数据
+   */
+  async callHttpService(endpoint, params = {}, options = {}) {
+    const http = require('http');
+    const url = require('url');
+
+    return new Promise((resolve, reject) => {
+      const parsedUrl = url.parse(endpoint);
+      const method = options.method || 'GET';
+      const timeout = options.timeout || 5000;
+      
+      let requestPath = parsedUrl.path;
+      let postData = null;
+
+      if (method === 'GET') {
+        // GET请求：参数作为查询字符串
+        const queryString = Object.keys(params).length > 0 
+          ? '?' + Object.keys(params).map(key => `${key}=${encodeURIComponent(params[key])}`).join('&')
+          : '';
+        requestPath = parsedUrl.path + queryString;
+      } else {
+        // POST/PUT等请求：参数作为请求体
+        postData = JSON.stringify(params);
+      }
+
+      const requestOptions = {
+        hostname: parsedUrl.hostname,
+        port: parsedUrl.port || 80,
+        path: requestPath,
+        method: method,
+        timeout: timeout,
+        headers: {
+          'Content-Type': 'application/json',
+          'User-Agent': 'SerialSync/1.0'
+        }
+      };
+
+      if (postData) {
+        requestOptions.headers['Content-Length'] = Buffer.byteLength(postData);
+      }
+
+      const req = http.request(requestOptions, (res) => {
+        let data = '';
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        res.on('end', () => {
+          if (res.statusCode >= 200 && res.statusCode < 300) {
+            resolve(data);
+          } else {
+            reject(new Error(`HTTP ${res.statusCode}: ${res.statusMessage}`));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        reject(error);
+      });
+
+      req.on('timeout', () => {
+        req.destroy();
+        reject(new Error('Request timeout'));
+      });
+
+      if (postData) {
+        req.write(postData);
+      }
+      
+      req.end();
+    });
+  }
+
+  /**
+   * 处理对端的拉取请求
+   * @param {Object} data - 请求数据
+   */
+  async handlePullRequest(data) {
+    const { requestId, serviceId, params } = data;
+
+    try {
+      // 检查服务是否在本地注册
+      if (!this.localServices.has(serviceId)) {
+        throw new Error(`Service ${serviceId} not found in local services`);
+      }
+
+      const service = this.localServices.get(serviceId);
+      
+      // 检查服务是否启用
+      if (!service.enabled) {
+        throw new Error(`Service ${serviceId} is disabled`);
+      }
+
+      let result;
+      
+      if (service.type === 'http') {
+        // 合并默认参数和请求参数
+        const mergedParams = { ...service.defaultParams, ...params };
+        
+        // 调用HTTP服务
+        result = await this.callHttpService(service.endpoint, mergedParams, {
+          method: service.method,
+          timeout: service.timeout
+        });
+      } else if (this.pullRequestHandler) {
+        // 使用自定义处理函数
+        result = await this.pullRequestHandler(serviceId, params);
+      } else {
+        throw new Error(`No handler for service type: ${service.type}`);
+      }
+
+      // 发送响应
+      const response = {
+        type: 'PULL_RESPONSE',
+        requestId,
+        success: true,
+        data: result
+      };
+
+      await this.sendData(JSON.stringify(response));
+
+    } catch (error) {
+      // 发送错误响应
+      const response = {
+        type: 'PULL_RESPONSE',
+        requestId,
+        success: false,
+        error: error.message
+      };
+
+      await this.sendData(JSON.stringify(response));
+    }
+  }
+
+  /**
+   * 处理对端的拉取响应
+   * @param {Object} data - 响应数据
+   */
+  handlePullResponse(data) {
+    const { requestId, success, data: responseData, error } = data;
+    const pending = this.pendingRequests.get(requestId);
+
+    if (pending) {
+      clearTimeout(pending.timeout);
+      this.pendingRequests.delete(requestId);
+
+      if (success) {
+        pending.resolve(responseData);
+      } else {
+        pending.reject(new Error(error));
+      }
+    }
   }
 }
 

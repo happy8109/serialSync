@@ -157,4 +157,78 @@ router.put('/config', async (req, res) => {
   }
 });
 
+// ==================== 拉式数据传输API ====================
+
+// 获取本地服务列表
+router.get('/services', async (req, res) => {
+  try {
+    const serialService = require('../services/serialService');
+    const services = serialService.serialManager.getLocalServices();
+    res.json({ success: true, data: services });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 注册本地服务
+router.post('/services/:serviceId', async (req, res) => {
+  try {
+    const { serviceId } = req.params;
+    const metadata = req.body;
+    
+    const serialService = require('../services/serialService');
+    serialService.serialManager.registerLocalService(serviceId, metadata);
+    
+    res.json({ success: true, message: '服务注册成功' });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// 拉取对端数据
+router.get('/pull/:serviceId', async (req, res) => {
+  try {
+    const { serviceId } = req.params;
+    const params = req.query;
+    
+    const serialService = require('../services/serialService');
+    const result = await serialService.serialManager.pullData(serviceId, params);
+    
+    // 尝试解析JSON响应
+    try {
+      const jsonResult = JSON.parse(result);
+      res.json({ success: true, data: jsonResult });
+    } catch (e) {
+      // 如果不是JSON，直接返回文本
+      res.set('Content-Type', 'text/plain');
+      res.send(result);
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST方式拉取对端数据（支持复杂参数）
+router.post('/pull/:serviceId', async (req, res) => {
+  try {
+    const { serviceId } = req.params;
+    const params = req.body;
+    
+    const serialService = require('../services/serialService');
+    const result = await serialService.serialManager.pullData(serviceId, params);
+    
+    // 尝试解析JSON响应
+    try {
+      const jsonResult = JSON.parse(result);
+      res.json({ success: true, data: jsonResult });
+    } catch (e) {
+      // 如果不是JSON，直接返回文本
+      res.set('Content-Type', 'text/plain');
+      res.send(result);
+    }
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 module.exports = router;
