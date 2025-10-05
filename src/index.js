@@ -42,7 +42,7 @@ process.on('unhandledRejection', (reason, promise) => {
 /**
  * 启动应用
  */
-async function startApp(overridePort) {
+async function startApp(overridePort, overrideSerialPort) {
     try {
         logger.info('正在启动 SerialSync 应用...');
         
@@ -50,10 +50,10 @@ async function startApp(overridePort) {
         console.log(`\n            -= SerialSync ${SERIALSYNC_VERSION} 串口通信同步程序 =-\n        `);
 
         // 验证配置
-        validateConfig(overridePort);
+        validateConfig(overridePort, overrideSerialPort);
         
         // 启动Web服务器
-        const server = new WebServer();
+        const server = new WebServer(overrideSerialPort);
         // 覆盖端口
         if (overridePort) {
             const originalStart = server.start.bind(server);
@@ -81,7 +81,8 @@ async function startApp(overridePort) {
         // 显示访问信息
         const port = overridePort || config.get('server.port');
         const host = config.get('server.host');
-        console.log(`\n🌐 Web界面: http://${host}:${port}\n📊 串口配置: ${config.get('serial.port')} @ ${config.get('serial.baudRate')}bps\n📝 日志文件: ${config.get('logging.file')}\n🔧 按 Ctrl+C 退出程序\n        `);
+        const serialPort = overrideSerialPort || config.get('serial.port');
+        console.log(`\n🌐 Web界面: http://${host}:${port}\n📊 串口配置: ${serialPort} @ ${config.get('serial.baudRate')}bps\n📝 日志文件: ${config.get('logging.file')}\n🔧 按 Ctrl+C 退出程序\n        `);
         
     } catch (error) {
         logger.error('应用启动失败:', error);
@@ -93,11 +94,12 @@ async function startApp(overridePort) {
 /**
  * 验证配置
  */
-function validateConfig(overridePort) {
+function validateConfig(overridePort, overrideSerialPort) {
     try {
         // 验证串口配置
         const serialConfig = config.get('serial');
-        if (!serialConfig.port) {
+        const serialPort = overrideSerialPort || serialConfig.port;
+        if (!serialPort) {
             throw new Error('串口配置错误: 未指定串口');
         }
         
@@ -133,12 +135,16 @@ SerialSync - 串口通信程序
   node src/index.js [选项]
 
 选项:
-  --help, -h     显示帮助信息
-  --version, -v  显示版本信息
-  --config <path> 指定配置文件路径
+  --help, -h          显示帮助信息
+  --version, -v       显示版本信息
+  --port <port>       指定Web服务器端口
+  --serial <port>     指定串口端口
+  --config <path>     指定配置文件路径
 
 示例:
   node src/index.js
+  node src/index.js --port 3001 --serial COM4
+  node src/index.js --port 3002 --serial COM5
   node src/index.js --config ./config/custom.json
 
 配置文件:
@@ -169,6 +175,7 @@ function showVersion() {
 const args = process.argv.slice(2);
 
 let overridePort = null;
+let overrideSerialPort = null;
 
 if (args.includes('--help') || args.includes('-h')) {
     showHelp();
@@ -190,5 +197,15 @@ if (portIndex !== -1 && args[portIndex + 1]) {
     }
 }
 
+// 解析 --serial 参数
+const serialIndex = args.findIndex(arg => arg === '--serial');
+if (serialIndex !== -1 && args[serialIndex + 1]) {
+    overrideSerialPort = args[serialIndex + 1];
+    if (!overrideSerialPort || typeof overrideSerialPort !== 'string') {
+        console.error('❌ 串口参数无效，请输入有效的串口名称（如 COM4）');
+        process.exit(1);
+    }
+}
+
 // 启动应用
-startApp(overridePort); 
+startApp(overridePort, overrideSerialPort); 

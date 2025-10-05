@@ -15,6 +15,26 @@ router.get('/status', async (req, res) => {
   }
 });
 
+// 获取串口连接状态（专门用于调试）
+router.get('/serial-status', async (req, res) => {
+  try {
+    const serialService = require('../services/serialService');
+    const isConnected = serialService.serialManager.isConnected;
+    const currentPort = serialService.serialManager._currentPort;
+    
+    res.json({ 
+      success: true, 
+      data: { 
+        connected: isConnected,
+        port: currentPort,
+        timestamp: new Date().toISOString()
+      } 
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // 连接串口
 router.post('/connect', async (req, res) => {
   try {
@@ -192,6 +212,18 @@ router.get('/pull/:serviceId', async (req, res) => {
     const params = req.query;
     
     const serialService = require('../services/serialService');
+    
+    // 检查串口连接状态
+    if (!serialService.serialManager.isConnected) {
+      return res.status(500).json({ 
+        success: false, 
+        error: '串口未连接，请先连接串口' 
+      });
+    }
+    
+    console.log(`[API] 收到拉取请求: serviceId=${serviceId}, params=`, params);
+    console.log(`[API] 串口连接状态: ${serialService.serialManager.isConnected}`);
+    
     const result = await serialService.serialManager.pullData(serviceId, params);
     
     // 尝试解析JSON响应
@@ -204,6 +236,7 @@ router.get('/pull/:serviceId', async (req, res) => {
       res.send(result);
     }
   } catch (error) {
+    console.error(`[API] 拉取请求失败:`, error.message);
     res.status(500).json({ success: false, error: error.message });
   }
 });

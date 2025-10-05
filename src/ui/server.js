@@ -9,12 +9,20 @@ const serialService = require('./services/serialService');
 const { initWebSocket } = require('./ws/index');
 
 class WebServer {
-  constructor() {
+  constructor(serialPortOverride = null) {
     this.app = express();
     this.wsServer = null; // 保存WebSocket实例
+    this.serialPortOverride = serialPortOverride; // 保存串口覆盖参数
     this.setupMiddleware();
     this.setupRoutes();
     this._signalHandlersRegistered = false;
+    
+    // 如果有串口覆盖参数，重新初始化serialService
+    if (serialPortOverride) {
+      const { initSerialManager } = require('./services/serialService');
+      initSerialManager(serialPortOverride);
+      logger.info(`WebServer初始化，串口覆盖: ${serialPortOverride}`);
+    }
   }
 
   /**
