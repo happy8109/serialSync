@@ -149,7 +149,19 @@ class SerialManager extends EventEmitter {
             this._recvBuffer = this._recvBuffer.slice(1);
             continue;
           }
-          // 优先判断 FILE_REQ/ACCEPT/REJECT 包
+          // 优先判断 PULL_RESPONSE 包（扩展短包协议：[0xAA][0x21][LEN_H][LEN_L][DATA][CHECKSUM]）
+          if (this._recvBuffer.length >= 5 && this._recvBuffer[1] === PKG_TYPE.PULL_RESPONSE) {
+            const len = (this._recvBuffer[2] << 8) | this._recvBuffer[3]; // 2字节长度
+            const expectedLen = 5 + len; // 包头(4) + 数据(len) + 校验和(1)
+            if (this._recvBuffer.length < expectedLen) {
+              break;
+            }
+            const onePacket = this._recvBuffer.slice(0, expectedLen);
+            this._recvBuffer = this._recvBuffer.slice(expectedLen);
+            this.handleDataReceived(onePacket);
+            continue;
+          }
+          // 再判断 FILE_REQ/ACCEPT/REJECT 包
           if (this._recvBuffer.length >= 4 && 
               (this._recvBuffer[1] === PKG_TYPE.FILE_REQ || 
                this._recvBuffer[1] === PKG_TYPE.FILE_ACCEPT || 
@@ -398,6 +410,34 @@ class SerialManager extends EventEmitter {
    */
   handleDataReceived(data) {
     let buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    
+    // 优先处理 PULL_RESPONSE 协议（扩展短包协议：[0xAA][0x21][LEN_H][LEN_L][DATA][CHECKSUM]）
+    if (buf.length >= 5 && buf[0] === 0xAA && buf[1] === PKG_TYPE.PULL_RESPONSE) {
+      const len = (buf[2] << 8) | buf[3]; // 2字节长度
+      if (buf.length === len + 5) {
+        const dataPart = buf.slice(4, 4 + len);
+        const checksum = buf[4 + len];
+        const valid = this.calcChecksum(dataPart) === checksum;
+        if (valid) {
+          let processed = dataPart;
+          if (this.compression) {
+            try { processed = zlib.inflateSync(dataPart); } catch (e) { logger.warn('PULL_RESPONSE解压缩失败:', e); }
+          }
+          
+          // 解析PULL_RESPONSE
+          try {
+            const jsonStr = processed.toString('utf8');
+            const jsonData = JSON.parse(jsonStr);
+            logger.info(`接收到PULL_RESPONSE: ${jsonData.requestId}`);
+            this.handlePullResponse(jsonData);
+            return;
+          } catch (e) {
+            logger.error('PULL_RESPONSE解析失败:', e);
+          }
+        }
+      }
+    }
+    
     // 只保留新协议：优先判断 FILE_REQ/ACCEPT/REJECT
     if (buf.length >= 4 && buf[0] === 0xAA) {
       const type = buf[1];
@@ -1157,7 +1197,8 @@ class SerialManager extends EventEmitter {
         data: result
       };
 
-      await this.sendData(JSON.stringify(response));
+      // 使用扩展短包协议发送PULL_RESPONSE（支持2字节长度）
+      await this.sendPullResponse(JSON.stringify(response));
 
     } catch (error) {
       // 发送错误响应
@@ -1168,7 +1209,8 @@ class SerialManager extends EventEmitter {
         error: error.message
       };
 
-      await this.sendData(JSON.stringify(response));
+      // 使用扩展短包协议发送PULL_RESPONSE（支持2字节长度）
+      await this.sendPullResponse(JSON.stringify(response));
     }
   }
 
@@ -1190,6 +1232,54 @@ class SerialManager extends EventEmitter {
         pending.reject(new Error(error));
       }
     }
+  }
+
+  /**
+   * 发送PULL_RESPONSE（使用扩展短包协议）
+   * @param {string|Buffer} data - 响应数据
+   */
+  async sendPullResponse(data) {
+    if (!this.isConnected) {
+      return Promise.reject(new Error('串口未连接'));
+    }
+    try {
+      let buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      if (this.compression) {
+        buf = zlib.deflateSync(buf);
+      }
+      const packet = this.packPullResponse(buf);
+      return new Promise((resolve, reject) => {
+        this.port.write(packet, (err) => {
+          if (err) {
+            this.emit('error', err);
+            reject(err);
+          } else {
+            logger.info(`PULL_RESPONSE发送成功: ${buf.length} 字节`);
+            auditLogger.info('PULL_RESPONSE发送成功', { size: buf.length });
+            resolve();
+          }
+        });
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
+  }
+
+  /**
+   * 打包PULL_RESPONSE（扩展短包协议）
+   * @param {Buffer} data - 数据
+   * @returns {Buffer}
+   */
+  packPullResponse(data) {
+    if (!Buffer.isBuffer(data)) data = Buffer.from(data);
+    const len = data.length;
+    const checksum = this.calcChecksum(data);
+    return Buffer.concat([
+      Buffer.from([0xAA, PKG_TYPE.PULL_RESPONSE]),
+      Buffer.from([(len >> 8) & 0xFF, len & 0xFF]), // 2字节长度
+      data,
+      Buffer.from([checksum])
+    ]);
   }
 }
 

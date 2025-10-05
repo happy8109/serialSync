@@ -76,6 +76,40 @@ sm.on('error', (err) => {
 });
 ```
 
+## 拉式数据传输API
+
+### 对端调用说明
+
+**调用格式**：
+```
+http://localhost:{B端端口}/api/pull/{服务ID}
+```
+
+**实际示例**：
+- 服务ID：`daily_brief`（来自配置文件 `services.localServices.daily_brief`）
+- B端端口：`3002`（通过 `--port 3002` 启动参数指定）
+- 完整调用地址：`http://localhost:3002/api/pull/daily_brief`
+
+**配置映射关系**：
+```json
+{
+  "services": {
+    "localServices": {
+      "daily_brief": {  // ← 服务ID
+        "endpoint": "http://localhost:3000/api/stats/daily/brief"  // ← 实际API端点
+      }
+    }
+  }
+}
+```
+
+**数据流程**：
+1. B端调用：`http://localhost:3002/api/pull/daily_brief`
+2. 提取服务ID：`daily_brief`
+3. 查找配置：`services.localServices.daily_brief`
+4. 调用A端API：`http://localhost:3000/api/stats/daily/brief`
+5. 通过串口返回数据给B端
+
 ---
 
 如需详细协议、开发进度等，请查阅 docs/protocol.md、docs/development-progress.md。 

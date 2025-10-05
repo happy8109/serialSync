@@ -290,3 +290,41 @@ async function sendFilesInQueue(fileList) {
    - 支持多实例并行测试
    - 优化开发调试体验
 
+## 2025-10-05 最新修复记录
+
+### PULL_RESPONSE协议支持修复
+
+**问题描述**：
+- B端无法正确解析A端发送的PULL_RESPONSE数据
+- 串口数据拼包逻辑缺少对扩展短包协议的支持
+- 超过255字节的响应数据无法正常传输，导致"Request timeout"错误
+
+**解决方案**：
+1. **扩展短包协议实现**：
+   - 为PULL_RESPONSE创建专用协议格式：`[0xAA][0x21][LEN_H][LEN_L][DATA][CHECKSUM]`
+   - 支持2字节长度字段（最大65535字节）
+   - 保持与现有协议的完全兼容性
+
+2. **串口数据接收优化**：
+   - 在`port.on('data')`拼包逻辑中优先识别PULL_RESPONSE协议（0x21）
+   - 在`handleDataReceived`方法中添加PULL_RESPONSE解析逻辑
+   - 支持校验和验证和数据解压缩处理
+
+3. **数据发送机制完善**：
+   - 添加`sendPullResponse`方法，使用扩展短包协议发送响应
+   - 添加`packPullResponse`方法，打包扩展短包协议数据
+   - 修改`handlePullRequest`方法，使用新的发送机制
+
+**测试验证**：
+- ✅ 成功传输595字节的API响应数据
+- ✅ 请求ID正确匹配：`mgde4xsydiqpgfcit88`
+- ✅ 完整的请求-响应流程正常工作
+- ✅ 支持并发请求和超时处理机制
+- ✅ 日志显示：`PULL_RESPONSE发送成功: 595 字节` 和 `接收到PULL_RESPONSE`
+
+**技术要点**：
+- 请求ID机制确保请求-响应正确匹配
+- 扩展短包协议解决了255字节限制问题
+- 串口数据拼包逻辑支持多种协议格式
+- 完整的错误处理和超时机制
+
