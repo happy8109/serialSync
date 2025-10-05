@@ -24,6 +24,27 @@ function initSerialManager(portOverride = null) {
   return serialManager;
 }
 
+// 自动连接串口（核心功能）
+async function autoConnectSerial() {
+  try {
+    if (!serialManager) {
+      initSerialManager();
+    }
+    
+    // 获取串口配置
+    const actualPort = serialPortOverride || config.get('serial.port');
+    logger.info(`[核心] 自动连接串口: ${actualPort}`);
+    
+    await serialManager.connect(actualPort);
+    logger.info(`[核心] 串口连接成功: ${actualPort}`);
+    
+    return true;
+  } catch (error) {
+    logger.error(`[核心] 串口自动连接失败: ${error.message}`);
+    return false;
+  }
+}
+
 // 设置事件监听器
 function setupEventListeners() {
   if (!serialManager) return;
@@ -310,5 +331,6 @@ module.exports = {
   closeAll,
   getSerialConfig,
   initSerialManager, // 导出初始化函数
+  autoConnectSerial, // 导出自动连接函数
   get serialManager() { return serialManager; } // 导出实例的getter
 }; 

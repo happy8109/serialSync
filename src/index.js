@@ -76,13 +76,24 @@ async function startApp(overridePort, overrideSerialPort) {
         }
         server.start();
         
+        // 自动连接串口（核心功能）
+        logger.info('正在自动连接串口...');
+        const { autoConnectSerial } = require('./ui/services/serialService');
+        const connectSuccess = await autoConnectSerial();
+        if (connectSuccess) {
+            logger.info('串口桥核心功能已就绪');
+        } else {
+            logger.warn('串口连接失败，但程序继续运行（可通过Web界面手动连接）');
+        }
+        
         logger.info('SerialSync 应用启动成功');
         
         // 显示访问信息
         const port = overridePort || config.get('server.port');
         const host = config.get('server.host');
         const serialPort = overrideSerialPort || config.get('serial.port');
-        console.log(`\n🌐 Web界面: http://${host}:${port}\n📊 串口配置: ${serialPort} @ ${config.get('serial.baudRate')}bps\n📝 日志文件: ${config.get('logging.file')}\n🔧 按 Ctrl+C 退出程序\n        `);
+        const serialStatus = connectSuccess ? '✅ 已连接' : '❌ 未连接';
+        console.log(`\n🌐 Web界面: http://${host}:${port}\n📊 串口配置: ${serialPort} @ ${config.get('serial.baudRate')}bps (${serialStatus})\n📝 日志文件: ${config.get('logging.file')}\n🔧 按 Ctrl+C 退出程序\n        `);
         
     } catch (error) {
         logger.error('应用启动失败:', error);

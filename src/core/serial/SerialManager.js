@@ -1151,6 +1151,7 @@ class SerialManager extends EventEmitter {
     });
   }
 
+
   /**
    * 处理对端的拉取请求
    * @param {Object} data - 请求数据
