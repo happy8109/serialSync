@@ -1,179 +1,176 @@
-# SerialSync 架构设计
+# SerialSync 架构设计 (v2.2)
 
-## 项目愿景与核心目标
-
-SerialSync 致力于打造一个基于串口的双机文件共享/同步平台，支持点对点文件传输和字符传输（聊天），适用于无网络环境下的工业、实验室、嵌入式等场景。
-
-### 主要目标：
-- **串口双机文件共享/同步**：让两台设备通过串口实现类似"网盘/同步盘"的文件互通，支持自动/手动同步、目录级文件管理。
-- **点对点文件传输**：支持用户主动选择文件，通过串口点对点发送，适合临时文件交换、批量传输。
-- **点对点字符传输（聊天）**：支持实时文本消息传递，实现简易聊天或命令交互。
-- **跨平台、低门槛、易用性**：让没有网络环境的设备也能方便地进行文件和消息同步。
-
-> 提示：后续 UI 和高级功能开发应始终聚焦于上述高层应用目标，避免只关注底层协议和工具实现。
+> **核心理念**：将底层通信与上层业务彻底解耦，引入"串口桥"与"优先级队列"机制，实现高可靠、多任务并发的串口通信系统。同时，通过统一的**应用控制层 (AppController)**，为 Web UI 和 CLI 提供一致的交互接口。
 
 ---
 
-## 核心功能
+## 1. 系统架构概览
 
-SerialSync 项目有两大核心功能，所有协议、架构与实现均围绕这两点展开：
+系统采用 **四层架构** 设计，自底向上分别为：
 
-1. **文字传输**：支持短消息、命令、聊天等字符数据的可靠传输（短包协议）。
-2. **文件传输**：支持大文件、二进制数据的高效分块传输、自动确认、进度统计等（分块/扩展协议）。
+1.  **链路层 (Link Layer)**：`SerialBridge`
+    *   负责物理串口的连接、断开、自动重连。
+    *   负责 **COBS 编解码**，确保帧同步的绝对可靠。
+    *   负责 **CRC-16 校验**，确保数据完整性。
+    *   负责流控（Backpressure）。
 
-请在开发、维护、扩展时始终牢记这两大核心功能，避免遗忘或偏离项目主线。
+2.  **调度层 (Scheduling Layer)**：`PacketScheduler`
+    *   负责管理多级优先级队列（Priority Queues）。
+    *   负责帧（Frame）的调度与发送。
+    *   **特点**：抢占式调度，确保高优先级任务（如心跳、聊天）不被大数据传输阻塞。
 
-## 主要模块结构
+3.  **业务层 (Service Layer)**：`Services`
+    *   实现具体的业务逻辑（文件传输、聊天、API 转发）。
+    *   **特点**：模块化，通过注册机制挂载到系统。
 
-- `src/core/serial/SerialManager.js`：核心串口与协议实现，事件驱动，负责协议解析、会话管理、分块传输。
-- `src/cli.js`：命令行界面，负责用户交互、命令解析、进度显示。
-- `src/ui/`：Web UI界面，支持串口连接、参数配置、字符传输、文件传输、实时进度显示。
-- `src/utils/`：工具与日志，统一日志输出、错误处理。
-- `config/`：配置文件，集中管理串口、传输、目录等参数。
-- `logs/`：日志文件，记录操作与安全审计。
-- `docs/`：开发文档（架构、协议、接口、CLI、进度等）。
+4.  **接口层 (Interface Layer)**：`AppController`
+    *   作为系统的统一入口 (Facade)。
+    *   负责命令的分发和状态的广播。
+    *   适配不同的客户端（Web UI, CLI）。
 
-## 测试环境说明
+```mermaid
+graph TD
+    subgraph Clients [客户端]
+        WebUI[Web Interface (Socket.io)]
+        CLI[Command Line (Inquirer)]
+    end
 
-- 当前所有开发与联调均基于**虚拟串口连接**（如 com0com、vspd 等虚拟串口对）。
-- send 命令（短包协议）已在该环境下多次验证通畅，收发无误。
-- 如遇文件传输等问题，优先排查协议实现、事件流、包格式等逻辑，不再怀疑物理链路。
-- 如后续测试环境有变化，请及时同步更新本说明。
+    subgraph Interface Layer [接口层]
+        Controller[AppController]
+    end
 
-## 后续计划
+    subgraph Service Layer [业务层]
+        Chat[MessageService]
+        File[FileTransferService]
+        Sync[SyncService]
+        Sys[SystemService]
+    end
 
-- 详见 docs/development-progress.md 下阶段开发计划。
-- 重点关注多文件队列、性能优化、Web UI、用户体验提升等方向。 
+    subgraph Scheduling Layer [调度层]
+        Q0[P0: System/Critical]
+        Q1[P1: Interactive]
+        Q2[P2: Active Transfer]
+        Q3[P3: Background]
+        
+        Scheduler[PacketScheduler]
+    end
 
----
+    subgraph Link Layer [链路层]
+        Bridge[SerialBridge]
+        Codec[PacketCodec (COBS/CRC)]
+        Port[Physical SerialPort]
+    end
 
-## 后端服务协议设计与多端兼容性
+    WebUI <-->|JSON/Events| Controller
+    CLI <-->|Func/Events| Controller
 
-为确保 SerialSync 后端服务具备更高的通用性和兼容性，推荐采用"RESTful API + WebSocket"组合协议，既能对接 Web UI，也能通过 API 与桌面应用（如 WinForms、Electron、Qt 等）无缝集成。
+    Controller --> Chat
+    Controller --> File
+    Controller --> Sync
+    Controller --> Sys
 
-### 推荐架构
-- **RESTful API**：适合所有平台（Web、桌面、移动、脚本等）进行命令调用、状态查询、文件上传/下载。
-- **WebSocket**：适合推送实时事件（如进度、日志、文件请求、状态变更等），提升前端体验。
-- **文件传输**：建议用标准 HTTP(S) multipart/form-data 或流式下载接口，兼容所有主流前端。
-
-### 设计建议
-- API 设计遵循 RESTful 风格，如：
-  - `POST /api/connect`、`POST /api/sendfile`、`GET /api/status`、`GET /api/progress`、`POST /api/sendmsg` 等
-- 事件推送用 WebSocket，如：
-  - `ws://localhost:3000/ws`，推送 progress、fileRequest、log、error 等事件
-- 接口文档标准化，建议采用 OpenAPI/Swagger 规范，便于多端对接和自动生成客户端代码
-- 可选身份认证/安全机制（如 JWT、Token、IP 白名单等）
-
-### 桌面应用对接注意事项
-- .NET（WinForms/WPF）、Electron、Qt、Java、Python 等均原生支持 HTTP/WebSocket
-- 避免仅浏览器支持的协议（如 SSE），优先用 WebSocket
-- 文件传输接口要支持大文件分块/断点续传（如有需求）
-
-### 典型多端对接流程（以 WinForms 为例）
-1. **连接串口**：`POST /api/connect`，参数为串口号、波特率等
-2. **发送/接收文件**：`POST /api/sendfile` 上传文件，`GET /api/receivefile` 下载文件
-3. **实时进度/事件**：通过 WebSocket 订阅进度、日志、文件请求等事件
-4. **状态查询**：`GET /api/status` 查询当前连接、任务、速率等
-
-### 结论
-- RESTful API + WebSocket 是最通用、跨平台、易维护的服务协议组合，适合 Web、桌面、移动等多端对接。
-- 只要接口标准化，任何支持 HTTP/WebSocket 的前端都能无缝对接本项目。
-- 此方案为后续多端开发（Web UI、WinForms、Electron、Qt 等）提供坚实基础。
-
---- 
-
----
-
-## 2025-01-27 设计进展与未来规划
-
-### Web UI 功能完善
-- **界面优化**：状态显示简化为4个核心参数（连接状态、串口、波特率、数据块大小），界面更清爽
-- **布局改进**：聊天面板和文件同步面板采用flex布局，响应式设计，小屏幕自动垂直堆叠
-- **功能完善**：支持字符传输、文件传输、实时进度显示、配置参数动态加载
-- **用户体验**：按钮文本优化，错误处理增强，代码结构优化
-
-### 配置管理优化
-- **动态配置加载**：SerialManager.connect()方法重新读取配置文件，确保参数实时生效
-- **参数配置界面**：支持串口基本参数和文件传输参数的tab页面配置
-- **实时更新**：配置修改后立即应用到新的连接和传输，无需重启服务
-
-### 文件传输功能
-- **文件上传**：支持文件选择和上传，实时进度显示
-- **传输统计**：实时统计传输速率、丢块数、重试次数
-- **状态反馈**：完整的传输状态反馈和错误处理
-
-### CLI 与协议层
-- CLI 全面 inquirer 化，命令、参数、确认、路径输入均为交互式体验，历史输入流冲突、提示符丢失等问题彻底解决。
-- autospeed、receivefile 等命令体验优化，参数提示、另存为等细节适配未来 UI 场景。
-- SerialManager 事件驱动架构，接口完整，进度、丢块、重试等统计信息丰富，满足 CLI/UI/自动化多场景需求。
-
-### 后端服务与多端兼容
-- 推荐后端采用 RESTful API + WebSocket 组合协议，兼容 Web UI、桌面应用（WinForms、Electron、Qt 等），接口标准化，便于多端集成。
-- 目录结构建议分层聚合，api/、ws/、services/、utils/ 等，避免 server.js 过于臃肿。
-- 典型流程、接口建议、对接注意事项已补充进文档。
-
-### 下一步重点
-1. **文件同步功能**：实现文件监控、自动同步、冲突解决
-2. **多文件队列传输**：支持批量文件传输和队列管理
-3. **高级压缩算法**：提升传输效率
-4. **用户权限和安全机制**：增强系统安全性
-5. **移动端适配**：优化移动设备体验 
-
----
-
-## 文件同步队列与任务管理设计（2025-07-15补充）
-
-### 1. 高层文件队列系统
-- 所有文件相关传输（同步、点对点、API/外部请求）统一纳入 FileTransferQueue 进行调度。
-- 队列支持任务入队、出队、暂停、恢复、取消，底层 SerialManager 只负责单文件传输。
-- 队列任务类型区分“同步任务”、“点对点传输”、“API请求”等。
-
-### 2. 同步任务的概念
-- 每个同步任务独立可控（新建、修改、启用、停止、删除）。
-- 任务包含：需同步的文件/文件夹路径、同步方向、同步策略、递归、排除规则、优先级、同步周期等。
-
-#### 任务数据结构示例：
-```js
-const syncTask = {
-  id: 'task1',
-  name: '文档同步',
-  enabled: true,
-  srcPath: 'D:/docs',
-  dstPath: '/mnt/docs',
-  direction: 'A->B',
-  strategy: 'mtime', // 冲突策略：以最近修改时间为准
-  recursive: true,   // 是否递归子目录
-  exclude: ['*.tmp', 'node_modules'],
-  priority: 10,      // 优先级，数值越大优先级越高
-  schedule: '0 */10 * * * *', // 同步周期，cron表达式或定时秒数
-};
+    Chat -->|P1| Q1
+    File -->|P2| Q2
+    Sync -->|P3| Q3
+    Sys -->|P0| Q0
+    
+    Q0 & Q1 & Q2 & Q3 --> Scheduler
+    Scheduler --> Bridge
+    Bridge --> Codec
+    Codec --> Port
 ```
 
-### 3. 队列调度与优先级
-- FileTransferQueue 支持按任务优先级调度，高优先级任务先执行。
-- 支持定时/周期同步（如每10分钟自动同步），可通过 schedule 字段配置。
-- 队列可动态插入/调整任务，支持暂停/恢复/取消。
+---
 
-### 4. 同步流程与冲突策略
-- 递归扫描目录，生成文件状态清单（含 mtime/hash/size/相对路径）。
-- 双方交换清单，比对差异，按优先级和同步周期生成同步队列。
-- 冲突处理：以最近修改日期为准，新文件覆盖旧文件。
-- 日志记录所有同步、冲突、覆盖等操作。
+## 2. 核心组件设计
 
-### 5. 典型伪代码
-```js
-// 任务管理
-const syncTask = { ... };
-// 队列调度
-FileTransferQueue.enqueue({
-  type: 'sync',
-  taskId: syncTask.id,
-  file: 'D:/docs/a.txt',
-  action: 'upload',
-  priority: syncTask.priority
-});
-// 队列统一调度，按优先级和周期执行
-FileTransferQueue.processNext();
+### 2.1 链路层：SerialBridge & PacketCodec
+
+**职责**：
+*   **连接管理**：封装 `serialport` 库，提供统一的 `connect`, `disconnect`, `reconnect` 接口。
+*   **COBS 编解码**：
+    *   **发送**：`Raw Frame` -> `CRC` -> `COBS Encode` -> `0x00` -> `Port`
+    *   **接收**：`Port` -> `Buffer` -> `Split by 0x00` -> `COBS Decode` -> `CRC Check` -> `Frame`
+*   **脏数据清洗 (Resync)**：
+    *   得益于 COBS，Resync 变得极其简单：只要丢弃当前缓冲区直到下一个 `0x00`，即可立即恢复同步。
+
+### 2.2 调度层：PacketScheduler
+
+**优先级定义**：
+
+| 优先级 | 名称 | 典型用途 | 特性 |
+| :--- | :--- | :--- | :--- |
+| **P0** | **System** | Ping/Pong, ACK, NACK | **最高优先级**，极小包，立即发送，不可阻塞 |
+| **P1** | **Interactive** | Chat, Command, API Request | **高优先级**，用户交互，延迟敏感 |
+| **P2** | **Active** | Manual File Transfer | **中优先级**，用户主动发起的文件传输 |
+| **P3** | **Background** | Auto Sync, Logs | **低优先级**，后台任务，随时可被抢占 |
+
+### 2.3 业务层：Services
+
+#### FileTransferService (文件传输服务)
+*   **切片化**：将大文件切分为固定大小的 Chunk。
+*   **选择性重传 (Selective Repeat)**：
+    *   接收端维护 Bitmap，记录已收到的 Chunks。
+    *   定期发送 `FILE_ACK` (含 Bitmap)。
+    *   发送端根据 Bitmap 仅重传丢失的包。
+*   **断点续传**：
+    *   基于文件 Hash 和 Bitmap。
+    *   重连后，接收端发送当前的 Bitmap，发送端直接从断点继续。
+
+#### MessageService (消息服务)
+*   处理聊天消息、短文本。
+*   直接使用 P1 优先级发送。
+
+#### SystemService (系统服务)
+*   **心跳保活**：每隔 N 秒发送 Ping (P0)，等待 Pong。超时则判定断连。
+*   **握手协商**：连接建立后，交换版本号和能力集（Capabilities）。
+
+### 2.4 接口层：AppController
+
+**职责**：
+*   **命令路由**：将 `send_msg`, `start_transfer` 等高层命令路由到对应的 Service。
+*   **状态聚合**：收集各 Service 的状态（如连接状态、传输进度、日志），统一格式后广播给前端。
+*   **配置管理**：处理配置的动态更新，并通知相关 Service。
+
+---
+
+## 3. 关键机制详解
+
+### 3.1 流量控制与背压 (Flow Control)
+为了防止 Node.js 层的发送速率超过物理串口的波特率导致缓冲区溢出：
+1.  `SerialBridge` 监听 `port.write()` 的返回值。如果返回 `false`，标记 `isCongested = true`，并触发 `pause` 事件。
+2.  `PacketScheduler` 收到 `pause` 事件，停止 `dequeue` 操作。
+3.  当串口底层触发 `drain` 事件，`SerialBridge` 标记 `isCongested = false`，触发 `resume` 事件。
+4.  `PacketScheduler` 恢复工作。
+
+### 3.2 脏数据清洗 (Resync)
+在串口通信中，干扰可能导致字节错位。
+*   **COBS 的优势**：`0x00` 是唯一的帧定界符。
+*   **清洗逻辑**：如果 CRC 校验失败，直接丢弃该帧。下一帧从下一个 `0x00` 开始，天然自动同步，无需复杂的"寻找包头"逻辑。
+
+---
+
+## 4. 目录结构规划 (重构后)
+
 ```
-
---- 
+src/
+├── core/
+│   ├── transport/          # 传输层核心
+│   │   ├── SerialBridge.js # 串口桥 (含 COBS Stream 处理)
+│   │   ├── PacketCodec.js  # 编解码器 (CRC 计算, Frame 封装)
+│   │   └── PacketScheduler.js # 调度器
+│   ├── services/           # 业务服务
+│   │   ├── ServiceManager.js
+│   │   ├── FileTransferService.js
+│   │   ├── MessageService.js
+│   │   └── SystemService.js
+│   ├── interface/          # 接口层 (新增)
+│   │   └── AppController.js
+│   └── protocol/           # 协议定义
+│       ├── Frame.js
+│       └── Constants.js
+├── ui/                     # 前端代码 (保持不变)
+├── utils/                  # 工具类
+├── index.js                # 入口
+└── config/                 # 配置
+```

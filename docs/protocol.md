@@ -1,113 +1,116 @@
-# 协议说明
+# SerialSync 通信协议 (v2.1)
 
-> 本项目核心目标：高效可靠的串口文字与文件同步，详见 architecture.md。
-
-## 1. 短包协议（send命令/消息/聊天）
-- 格式：[0xAA][LEN][DATA][CHECKSUM]
-  - 0xAA: 包头 (1字节)
-  - LEN: 数据长度 (1字节)
-  - DATA: 数据体 (LEN字节)
-  - CHECKSUM: 校验和 (1字节，对DATA所有字节累加和 & 0xFF)
-- 用于短文本、命令、聊天消息。
-
-## 2. 分块协议（sendfile命令/大文件）
-- 格式：[0xAA][TYPE][SEQ(2)][TOTAL(2)][LEN(2)][DATA][CHECKSUM]
-  - 0xAA: 包头 (1字节)
-  - TYPE: 包类型 (1字节，0x01=DATA, 0x02=ACK, 0x03=RETRY)
-  - SEQ: 当前块序号 (2字节)
-  - TOTAL: 总块数 (2字节)
-  - LEN: 数据长度 (2字节)
-  - DATA: 数据体 (LEN字节)
-  - CHECKSUM: 校验和 (1字节，对TYPE~LEN+DATA所有字节累加和 & 0xFF)
-- 用于大文件、二进制数据的可靠分块传输。
-
-## 3. 设计原则与注意事项
-- 分块大小(chunkSize)建议256~1024，过大易丢包。
-- 每块数据需ACK确认，超时重试，最大重试次数可配。
-- 支持整体压缩，发送端和接收端compression配置需一致。
-- 支持自动重连、错误处理、进度事件。
+本文档定义了 SerialSync v2.1 版本的通信协议。相比 v2.0，本版本引入了 COBS 编码、CRC-16 校验和 Bitmap ACK 机制，以显著提升传输的可靠性和效率。
 
 ---
 
-如需详细接口、CLI用法等，请查阅 docs/ 目录下其他文档。
+## 1. 物理层编码 (Physical Layer Encoding)
+
+为了解决数据中可能出现的帧头混淆问题，并提供可靠的帧同步机制，本协议采用 **COBS (Consistent Overhead Byte Stuffing)** 编码。
+
+*   **帧定界符**：`0x00`。
+*   **编码规则**：将原始数据中的 `0x00` 字节消除，替换为指向下一个 `0x00` 的偏移量。
+*   **优势**：
+    *   数据中绝不会出现 `0x00`，因此 `0x00` 可以唯一地作为帧结束标志。
+    *   一旦发生同步丢失，只需等待下一个 `0x00` 即可立即恢复同步（Resync）。
+    *   开销极低（约 0.4%）。
+
+**传输流格式**：
+`[COBS Encoded Data] [0x00]`
 
 ---
 
-## 4. 扩展协议设计与未来方向
+## 2. 帧结构 (Frame Structure)
 
-### 4.1 扩展协议包类型与格式
-- **FILE_REQ (0x10)**：文件传输请求，包含文件元数据（JSON格式）。
-  - 格式：[0xAA][0x10][REQ_ID][LEN][META_JSON][CHECKSUM]
-    - 0xAA: 包头 (1字节)
-    - 0x10: 包类型 (1字节)
-    - REQ_ID: 请求ID (1字节)
-    - LEN: 元数据JSON长度 (1字节)
-    - META_JSON: JSON格式元数据（包含文件名、大小、确认要求等）
-    - CHECKSUM: 校验和 (1字节，对TYPE~META_JSON所有字节累加和 & 0xFF)
+解码 COBS 后，得到的原始二进制帧结构如下：
+
+| 字段 | 长度 (Byte) | 说明 |
+| :--- | :--- | :--- |
+| **TYPE** | 1 | 包类型 (见下表) |
+| **SEQ** | 2 | 序列号 (Big Endian)。请求/响应包用于匹配，数据包用于排序。 |
+| **LEN** | 2 | Body 数据长度 (Big Endian) |
+| **BODY** | N | 业务数据 (最大 65535) |
+| **CRC** | 2 | CRC-16/XMODEM 校验值 (TYPE + SEQ + LEN + BODY) |
+
+> **注意**：不再需要 `HEAD` 字段，因为 COBS 的 `0x00` 已经提供了完美的定界功能。
+
+---
+
+## 3. 核心机制
+
+### 3.1 校验算法
+采用 **CRC-16/XMODEM** 算法。
+*   Poly: `0x1021`
+*   Init: `0x0000`
+*   相比简单的 Checksum，CRC 能有效检测出多位翻转、错位等常见传输错误。
+
+### 3.2 确认与重传 (ACK Mechanism)
+为了提高文件传输效率，采用 **选择性重传 (Selective Repeat)** 策略，配合 **Bitmap ACK**。
+
+*   **普通 ACK**：收到短消息或命令时，回复 `ACK { seq: 123 }`。
+*   **Bitmap ACK**：在文件传输过程中，接收端定期（或检测到丢包时）发送 Bitmap ACK。
+    *   格式：`{ startSeq: 100, bitmap: "FFFF00FF..." (Hex String or Base64) }`
+    *   含义：从 `startSeq` 开始，Bitmap 中为 `1` 的位表示已收到，`0` 表示丢失。
+    *   发送端收到后，仅重传 Bitmap 中为 `0` 的 Chunk。
+
+---
+
+## 4. 包类型定义 (Packet Types)
+
+### 4.1 系统层 (System - P0)
+
+| TYPE | 名称 | 说明 | Body 格式 |
+| :--- | :--- | :--- | :--- |
+| `0x00` | **PING** | 心跳请求 | 空 |
+| `0x01` | **PONG** | 心跳响应 | 空 |
+| `0x02` | **HANDSHAKE** | 握手 | JSON: `{ver: 2, caps: ["crc16", "cobs"]}` |
+| `0x03` | **ACK** | 通用确认 | JSON: `{seq: 123}` |
+| `0x04` | **NACK** | 显式拒收/重传请求 | JSON: `{seq: 123, reason: "crc_error"}` |
+
+### 4.2 消息层 (Message - P1)
+
+| TYPE | 名称 | 说明 | Body 格式 |
+| :--- | :--- | :--- | :--- |
+| `0x10` | **MSG_TEXT** | 文本消息 | UTF-8 String |
+| `0x11` | **CMD_REQ** | RPC 请求 | JSON: `{method: "get_status", params: {}}` |
+| `0x12` | **CMD_RESP** | RPC 响应 | JSON: `{result: ...} or {error: ...}` |
+
+### 4.3 传输层 (Transfer - P2/P3)
+
+| TYPE | 名称 | 说明 | Body 格式 |
+| :--- | :--- | :--- | :--- |
+| `0x20` | **FILE_OFFER** | 发送文件请求 | JSON: `{id: "uuid", name: "a.txt", size: 1024, hash: "md5...", chunks: 10}` |
+| `0x21` | **FILE_ACCEPT** | 接受/续传响应 | JSON: `{id: "uuid", accepted: true, bitmap: "..."}` |
+| `0x22` | **FILE_CHUNK** | 文件数据块 | `[FileID(16B UUID)] [ChunkSeq(2B)] [Data(N)]` *注：此处Body为自定义二进制结构以节省空间* |
+| `0x23` | **FILE_ACK** | 文件块确认 | JSON: `{id: "uuid", start: 0, bitmap: "..."}` |
+| `0x24` | **FILE_FIN** | 传输完成校验 | JSON: `{id: "uuid", hash: "..."}` |
+
+---
+
+## 5. 交互时序图 (示例)
+
+### 5.1 文件传输 (含丢包重传)
+
+```mermaid
+sequenceDiagram
+    participant A as Sender
+    participant B as Receiver
+
+    A->>B: FILE_OFFER (Seq=10, Chunks=4)
+    B->>A: FILE_ACCEPT (Seq=10, Accepted=True)
     
-    **元数据JSON格式**：
-    ```json
-    {
-      "name": "文件名.ext",
-      "size": 文件大小字节数,
-      "requireConfirm": true/false
-    }
-    ```
-
-- **FILE_ACCEPT (0x11)**：接收端同意接收。
-  - 格式：[0xAA][0x11][REQ_ID][0][CHECKSUM]
-    - 0x11: 包类型 (1字节)
-    - REQ_ID: 请求ID (1字节)
-    - 0: 数据长度为0
-    - CHECKSUM: 校验和
-
-- **FILE_REJECT (0x12)**：接收端拒绝接收。
-  - 格式：[0xAA][0x12][REQ_ID][LEN][REASON][CHECKSUM]
-    - 0x12: 包类型 (1字节)
-    - REQ_ID: 请求ID (1字节)
-    - LEN: 原因字符串长度 (1字节)
-    - REASON: 拒绝原因（可选）
-    - CHECKSUM: 校验和
-
-- **分块数据包 (DATA/ACK/RETRY)**
-  - 格式：[0xAA][TYPE][REQ_ID][SEQ(2)][TOTAL(2)][LEN(2)][DATA][CHECKSUM]
-    - TYPE: 0x01=DATA, 0x02=ACK, 0x03=RETRY
-    - REQ_ID: 请求ID (1字节)，关联 FILE_REQ
-    - 其余同分块协议
-
-### 4.2 事件流与接口机制
-- 发送端：`sendFile()` → 发送 FILE_REQ → 等待 FILE_ACCEPT/REJECT → 若 ACCEPT，开始分块发送
-- 接收端：收到 FILE_REQ → 触发 `fileRequest(meta, accept, reject)` 事件（可交互/自动）→ 回复 ACCEPT/REJECT → 若 ACCEPT，准备接收分块
-- 传输完成后，emit `file(meta, savePath)` 事件，参数包含最终保存路径、元数据等
-- 进度事件：`fileProgress(info)`，包含百分比、速率、丢块、重试等
-
-### 4.3 会话对象与多任务支持
-- 每次收到 FILE_REQ，新建会话对象，记录文件名、保存路径、是否需确认等
-- 分块数据到达时，查找会话对象，重组后 emit file 事件，带上 meta 信息
-- 传输完成后清理会话对象，避免多任务/多文件时错乱
-
-### 4.4 UI/CLI/自动化对接建议
-- 业务层（CLI/自动化/未来UI）只需监听事件，所有元数据和保存路径都通过事件参数传递
-- 彻底避免依赖全局变量，事件参数即为"真相"
-- 支持两种模式：需确认型（适合UI/点对点/需人工确认）、无需确认型（如 sendfile -e，适合自动同步）
-- 为UI/自动化预留接口，如自动弹窗、自动保存、历史记录等
-
-### 4.5 设计目标
-- 兼容现有分块协议，协议层与业务层解耦，便于后续扩展和团队协作
-- 支持高效、健壮的点对点同步、自动化批量同步、UI交互等多场景
-
----
-
-#### 【示例包】
-- 发送端发起请求：
-  `[0xAA][0x10][0x01][06][74 65 73 74 2e 74 78 74][CHECKSUM]`  // "test.txt"
-- 接收端同意：
-  `[0xAA][0x11][0x01][0][CHECKSUM]`
-- 接收端拒绝：
-  `[0xAA][0x12][0x01][LEN]["空间不足"][CHECKSUM]`
-- 分块数据包：
-  `[0xAA][0x01][0x01][SEQ][TOTAL][LEN][DATA][CHECKSUM]`
-
----
-
-如需详细开发进度、接口说明，请查阅 docs/development-progress.md、docs/api.md。 
+    A->>B: FILE_CHUNK (Seq=0)
+    A->>B: FILE_CHUNK (Seq=1) [LOST X]
+    A->>B: FILE_CHUNK (Seq=2)
+    A->>B: FILE_CHUNK (Seq=3)
+    
+    Note over B: 检测到 Seq=1 缺失
+    B->>A: FILE_ACK (Start=0, Bitmap=1011) 
+    
+    Note over A: 解析 Bitmap，发现 Seq=1 丢失
+    A->>B: FILE_CHUNK (Seq=1) [Retransmit]
+    
+    B->>A: FILE_ACK (Start=0, Bitmap=1111)
+    A->>B: FILE_FIN
+    B->>A: ACK
+```
