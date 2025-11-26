@@ -54,8 +54,8 @@
 | | `0x02` | HANDSHAKE | 握手 | JSON |
 | | `0x03` | ACK | 通用确认 | JSON: `{seq}` |
 | **Message** | `0x10` | MSG_TEXT | 文本消息 | UTF-8 String |
-| **Transfer** | `0x20` | FILE_OFFER | 发送请求 | JSON: `{id, name, size, chunks}` |
-| | `0x21` | FILE_ACCEPT | 接受响应 | JSON: `{id, accepted}` |
+| **Transfer** | `0x20` | FILE_OFFER | 发送请求 | JSON: `{id, name, size, chunks, hash}` |
+| | `0x21` | FILE_ACCEPT | 接受响应 | JSON: `{id, accepted, nextSeq}` |
 | | `0x22` | FILE_CHUNK | 文件数据 | `[FileID(36)] [Data(N)]` |
 | | `0x23` | FILE_ACK | 传输确认 | JSON: `{id, nextSeq}` |
 | | `0x24` | FILE_FIN | 传输完成 | JSON: `{id}` |
@@ -69,6 +69,15 @@
 *   **窗口大小**: **50 个 Chunk** (约 50KB)。发送端一次性发送窗口内数据，无需逐包等待。
 *   **ACK 机制**: 接收端每收到 **20 个 Chunk** 发送一次 `FILE_ACK`，告知期望的 `nextSeq`。
 *   **重传策略**: 选择性重传 (Selective Repeat)。如果 `nextSeq` 未推进，发送端重传对应包。
+
+### 3.2 断点续传 (Resumable Upload)
+v2.2 新增功能，基于文件 Hash 和元数据文件：
+1.  **Hash 校验**: `FILE_OFFER` 携带文件 MD5 Hash。
+2.  **状态持久化**: 接收端在传输过程中维护 `.meta` 文件记录已接收的 Bitmap。
+3.  **续传握手**: 
+    *   接收端收到 Offer 时，若本地存在匹配的 `.meta`，则在 `FILE_ACCEPT` 中返回 `nextSeq`。
+    *   发送端收到 `nextSeq` 后，直接跳转窗口位置，跳过已传数据。
+4.  **原子完成**: 传输完成后，接收端将 `.part` 临时文件重命名为正式文件名，并删除 `.meta`。
 
 ### 3.2 性能指标
 在 115200 bps 波特率下：

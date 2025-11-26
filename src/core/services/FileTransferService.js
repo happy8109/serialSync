@@ -77,6 +77,11 @@ class FileTransferService extends EventEmitter {
         const fileId = crypto.randomUUID();
         const totalChunks = Math.ceil(stats.size / this.chunkSize);
 
+        // 计算文件 Hash (MD5) - 用于断点续传校验
+        // 对于超大文件，这里可能会耗时，实际生产中可以只计算头尾+大小，或者流式计算
+        const fileBuffer = fs.readFileSync(filePath);
+        const fileHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+
         // 创建发送会话
         this.sendSessions.set(fileId, {
             fileId,
@@ -94,11 +99,12 @@ class FileTransferService extends EventEmitter {
             id: fileId,
             name: fileName,
             size: stats.size,
-            chunks: totalChunks
+            chunks: totalChunks,
+            hash: fileHash // 新增 Hash 字段
         };
 
         this._sendJson(TYPE.FILE_OFFER, offer);
-        bridgeLogger.info(`Sending file: ${fileName} (${(stats.size / 1024).toFixed(1)} KB)`);
+        bridgeLogger.info(`Sending file: ${fileName} (${(stats.size / 1024).toFixed(1)} KB) Hash: ${fileHash.substring(0, 6)}...`);
 
         return fileId;
     }
@@ -109,29 +115,68 @@ class FileTransferService extends EventEmitter {
         const offer = JSON.parse(frame.body.toString());
         bridgeLogger.info(`Receiving file: ${offer.name} (${(offer.size / 1024).toFixed(1)} KB)`);
 
-        // 自动接受
         const saveDir = path.join(process.cwd(), 'received');
         if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir);
-        const savePath = path.join(saveDir, offer.name);
 
-        const fd = fs.openSync(savePath, 'w');
+        // 使用 .part 后缀
+        const savePath = path.join(saveDir, offer.name + '.part');
+        const metaPath = path.join(saveDir, offer.name + '.meta');
+
+        let receivedBitmap = new Set();
+        let receivedChunks = 0;
+        let isResume = false;
+
+        // 检查是否存在断点信息
+        if (fs.existsSync(metaPath) && fs.existsSync(savePath)) {
+            try {
+                const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+                if (meta.hash === offer.hash && meta.size === offer.size) {
+                    // Hash 匹配，恢复进度
+                    // meta.bitmap 是数组，转回 Set
+                    receivedBitmap = new Set(meta.bitmap);
+                    receivedChunks = receivedBitmap.size;
+                    isResume = true;
+                    bridgeLogger.info(`Resuming transfer for ${offer.name}, progress: ${(receivedChunks / offer.chunks * 100).toFixed(1)}%`);
+                }
+            } catch (e) {
+                bridgeLogger.warn('Failed to read meta file, starting fresh');
+            }
+        }
+
+        // 打开文件 (r+ 模式支持读写，如果不存在则 w 创建)
+        let fd;
+        if (isResume) {
+            fd = fs.openSync(savePath, 'r+');
+        } else {
+            fd = fs.openSync(savePath, 'w');
+        }
 
         this.recvSessions.set(offer.id, {
             id: offer.id,
             name: offer.name,
             size: offer.size,
             totalChunks: offer.chunks,
-            receivedChunks: 0,
+            receivedChunks,
             savePath,
+            metaPath, // 保存 meta 路径
+            hash: offer.hash, // 保存 hash
             fd,
-            receivedBitmap: new Set(),
-            lastAckTime: 0
+            receivedBitmap,
+            lastAckTime: 0,
+            lastPercent: -1 // 用于进度条节流
         });
 
-        // 回复 FILE_ACCEPT
+        // 计算 nextSeq (第一个未收到的块)
+        let nextSeq = 0;
+        while (receivedBitmap.has(nextSeq)) {
+            nextSeq++;
+        }
+
+        // 回复 FILE_ACCEPT，带上 nextSeq
         this._sendJson(TYPE.FILE_ACCEPT, {
             id: offer.id,
-            accepted: true
+            accepted: true,
+            nextSeq: nextSeq
         });
     }
 
@@ -150,6 +195,13 @@ class FileTransferService extends EventEmitter {
 
         // 打开文件描述符
         session.fd = fs.openSync(session.filePath, 'r');
+
+        // 处理断点续传
+        if (resp.nextSeq && resp.nextSeq > 0) {
+            session.windowStart = resp.nextSeq;
+            bridgeLogger.info(`Resuming from chunk ${resp.nextSeq}`);
+            // 进度条也需要相应调整，这里暂不处理进度条的初始显示，_sendWindow 会处理
+        }
 
         // 开始发送窗口内的数据
         this._sendWindow(session);
@@ -208,16 +260,29 @@ class FileTransferService extends EventEmitter {
         // 策略：每收到 20 个包发送一次 ACK (匹配更大的窗口)
         if (session.receivedChunks % 20 === 0 || session.receivedChunks === session.totalChunks) {
             this._sendAck(session);
+
+            // 持久化进度到 .meta 文件
+            try {
+                const meta = {
+                    hash: session.hash,
+                    size: session.size,
+                    bitmap: Array.from(session.receivedBitmap) // Set 转 Array
+                };
+                fs.writeFileSync(session.metaPath, JSON.stringify(meta));
+            } catch (e) {
+                // 忽略写入错误，避免影响传输
+            }
         }
 
-        // 打印进度条
+        // 打印进度条 (节流：仅在百分比变化或每 50 包更新一次，防止刷屏)
         const percent = Math.round(session.receivedChunks / session.totalChunks * 100);
-        const barLength = 30;
-        const filledLength = Math.floor(barLength * percent / 100);
-        const bar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
-
-        // 使用 \r 实现同行更新
-        process.stdout.write(`\r[File] Receiving: ${session.name} [${bar}] ${percent}%`);
+        if (percent !== session.lastPercent || session.receivedChunks % 50 === 0) {
+            session.lastPercent = percent;
+            const barLength = 30;
+            const filledLength = Math.floor(barLength * percent / 100);
+            const bar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
+            process.stdout.write(`\r[File] Receiving: ${session.name} [${bar}] ${percent}%`);
+        }
 
         // 完成时换行
         if (session.receivedChunks === session.totalChunks) {
@@ -283,6 +348,17 @@ class FileTransferService extends EventEmitter {
 
         console.log(`[File] Transfer complete: ${session.name}`);
         fs.closeSync(session.fd);
+
+        // 重命名 .part -> 原文件名
+        const finalPath = session.savePath.replace('.part', '');
+        if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath); // 如果目标存在则覆盖
+        fs.renameSync(session.savePath, finalPath);
+
+        // 删除 .meta 文件
+        if (fs.existsSync(session.metaPath)) {
+            fs.unlinkSync(session.metaPath);
+        }
+
         this.recvSessions.delete(req.id);
     }
 
