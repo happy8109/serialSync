@@ -1,54 +1,30 @@
 {
   "serial": {
-    "port": "COM4",
+    "port": "COM3",
     "baudRate": 115200,
     "dataBits": 8,
     "stopBits": 1,
     "parity": "none",
-    "timeout": 5000,
+    "rtscts": true,
     "autoReconnect": true,
     "reconnectInterval": 3000,
-    "maxReconnectAttempts": 5,
-    "rtscts": false
+    "maxReconnectAttempts": 0
+  },
+  "transfer": {
+    "chunkSize": 1024,
+    "windowSize": 5,
+    "timeout": 5000
+  },
+  "message": {
+    "maxLength": 4096
+  },
+  "system": {
+    "heartbeatInterval": 5000,
+    "heartbeatTimeout": 15000
   },
   "logging": {
     "level": "info",
-    "file": "./logs/sync.log",
-    "maxSize": "10m",
-    "maxFiles": 5,
-    "format": "combined"
-  },
-  "server": {
-    "port": 3001,
-    "host": "0.0.0.0"
-  },
-  "sync": {
-    "chunkSize": 32768,
-    "timeout": 50,
-    "retryAttempts": 3,
-    "compression": true,
-    "autoAccept": true,
-    "saveDir": "./received_files",
-    "confirmTimeout": 30000
-  },
-  "services": {
-    "enabled": true,
-    "autoRegister": true,
-    "defaultTimeout": 30000,
-    "localServices": {
-      "daily_brief": {
-        "name": "每日简报",
-        "description": "生成指定日期的每日简报，包含结构化数据和中文简报文本",
-        "version": "1.0",
-        "type": "http",
-        "endpoint": "http://localhost:3000/api/stats/daily/brief",
-        "method": "GET",
-        "timeout": 10000,
-        "enabled": true,
-        "defaultParams": {
-          "order": "count_desc"
-        }
-      }
-    }
+    "console": true,
+    "file": true
   }
 }
