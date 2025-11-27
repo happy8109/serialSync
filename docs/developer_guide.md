@@ -13,10 +13,11 @@
 - [x] **服务层**: MessageService (Chat), FileTransferService (Sliding Window), SystemService。
 - [x] **CLI 工具**: 基于 `inquirer` 的交互式命令行工具。
 - [x] **性能优化**: 大文件传输吞吐量提升 5-10 倍。
+- [x] **断点续传**: 基于文件 Hash 的断点恢复 (v2.2)。
 
-### 未来规划 (Phase 4 - Deferred)
-- [ ] **Web UI**: 基于 Socket.io 的 Web 界面。
-- [ ] **断点续传**: 基于文件 Hash 的断点恢复。
+### 未来规划 (Phase 4 - API & UI)
+- [ ] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。
+- [ ] **Web UI**: 基于 React/Vue 的可视化控制台。
 
 ---
 
@@ -81,3 +82,34 @@ CLI 启动后进入交互式 REPL 模式。
 *   **文件传输优化**: 引入滑动窗口机制 (Window=50)，大幅减少 ACK 数量。
 *   **进度可视化**: CLI 新增双端实时进度条。
 *   **文档重构**: 整理为 `technical_reference.md` 和 `developer_guide.md`。
+
+---
+
+## 6. API Server 设计规范 (Phase 4)
+
+为了支持 Web UI 和桌面应用集成，我们将实现一个基于 HTTP/WebSocket 的 API Server 层，封装核心功能。
+
+### 6.1 架构概览
+*   **Core SDK**: `AppController` (Node.js)，负责业务逻辑。
+*   **API Server**: `Express` + `ws`，负责对外暴露接口。
+*   **Clients**: Web UI / Desktop App / CLI。
+
+### 6.2 REST API 接口
+用于控制指令和状态查询。
+
+| 方法 | 路径 | 描述 | 参数示例 |
+| :--- | :--- | :--- | :--- |
+| `GET` | `/api/ports` | 列出可用串口 | - |
+| `POST` | `/api/connect` | 连接串口 | `{ "path": "COM1", "baudRate": 115200 }` |
+| `POST` | `/api/disconnect` | 断开连接 | - |
+| `POST` | `/api/config` | 修改系统配置 | `{ "chunkSize": 4096, "windowSize": 100 }` |
+| `POST` | `/api/send/chat` | 发送消息 | `{ "text": "Hello" }` |
+| `POST` | `/api/send/file` | 发送文件 | `{ "path": "C:/data.bin" }` (或 multipart 上传) |
+
+### 6.3 WebSocket 事件
+用于实时数据推送。
+
+*   **Log**: `{ "type": "log", "level": "info", "message": "..." }`
+*   **Status**: `{ "type": "status", "connected": true, "port": "COM1" }`
+*   **Progress**: `{ "type": "progress", "file": "test.bin", "percent": 45, "speed": "1.2MB/s" }`
+*   **Chat**: `{ "type": "chat", "from": "remote", "text": "Hi there" }`

@@ -57,6 +57,15 @@ class AppController extends EventEmitter {
         this.systemService.on('pong', (data) => {
             this.emit('pong', data);
         });
+
+        // 监听文件传输事件
+        this.fileTransferService.on('progress', (data) => {
+            this.emit('progress', data);
+        });
+
+        this.fileTransferService.on('complete', (data) => {
+            this.emit('complete', data);
+        });
     }
 
     /**
@@ -76,6 +85,20 @@ class AppController extends EventEmitter {
      */
     async disconnect() {
         await this.bridge.disconnect();
+    }
+
+    /**
+     * 列出可用串口
+     */
+    async listPorts() {
+        return await this.bridge.constructor.listPorts();
+    }
+
+    /**
+     * 设置文件传输参数
+     */
+    setFileTransferConfig(config) {
+        this.fileTransferService.setConfig(config);
     }
 
     /**

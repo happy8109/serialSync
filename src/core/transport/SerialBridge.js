@@ -39,6 +39,13 @@ class SerialBridge extends EventEmitter {
     }
 
     /**
+     * 列出所有可用串口
+     */
+    static async listPorts() {
+        return await SerialPort.list();
+    }
+
+    /**
      * 连接串口
      * @param {string} path 串口号
      * @param {Object} optionsOverride 覆盖默认配置

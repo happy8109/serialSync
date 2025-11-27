@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SerialSync API Test</title>
+    <style>
+        body { font-family: monospace; padding: 20px; }
+        .panel { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; }
+        .log { height: 300px; overflow-y: scroll; border: 1px solid #999; background: #f0f0f0; padding: 5px; white-space: pre-wrap; }
+        input, button { margin: 5px 0; }
+        label { display: inline-block; width: 100px; }
+    </style>
+</head>
+<body>
+    <h1>SerialSync API Tester</h1>
+
+    <div class="panel">
+        <h3>Server Config</h3>
+        <label>API URL:</label> <input type="text" id="apiUrl" value="http://localhost:3000">
+        <button onclick="initWebSocket()">Connect WebSocket</button>
+        <span id="wsStatus" style="color: red;">WS Disconnected</span>
+    </div>
+
+    <div class="panel">
+        <h3>Serial Control</h3>
+        <button onclick="listPorts()">List Ports</button>
+        <div id="portList"></div>
+        <br>
+        <label>Port:</label> <input type="text" id="serialPort" value="COM4">
+        <label>Baud:</label> <input type="number" id="baudRate" value="115200">
+        <button onclick="connectSerial()">Connect</button>
+        <button onclick="disconnectSerial()">Disconnect</button>
+        <button onclick="getStatus()">Get Status</button>
+    </div>
+
+    <div class="panel">
+        <h3>Configuration</h3>
+        <label>Chunk Size:</label> <input type="number" id="chunkSize" value="1024">
+        <label>Window Size:</label> <input type="number" id="windowSize" value="50">
+        <button onclick="setConfig()">Update Config</button>
+    </div>
+
+    <div class="panel">
+        <h3>Actions</h3>
+        <label>Chat:</label> <input type="text" id="chatMsg" value="Hello">
+        <button onclick="sendChat()">Send Chat</button>
+        <br>
+        <label>File Path:</label> <input type="text" id="filePath" value="./package.json">
+        <button onclick="sendFile()">Send File</button>
+    </div>
+
+    <div class="panel">
+        <h3>Logs & Events</h3>
+        <button onclick="document.getElementById('logs').innerHTML=''">Clear</button>
+        <div id="logs" class="log"></div>
+    </div>
+
+    <script>
+        let ws;
+
+        function log(msg, type = 'info') {
+            const el = document.getElementById('logs');
+            const time = new Date().toLocaleTimeString();
+            el.innerHTML += `[${time}] [${type}] ${msg}\n`;
+            el.scrollTop = el.scrollHeight;
+        }
+
+        function getBaseUrl() {
+            return document.getElementById('apiUrl').value;
+        }
+
+        async function apiCall(endpoint, method = 'GET', body = null) {
+            const url = getBaseUrl() + '/api' + endpoint;
+            try {
+                const options = {
+                    method,
+                    headers: { 'Content-Type': 'application/json' }
+                };
+                if (body) options.body = JSON.stringify(body);
+                
+                const res = await fetch(url, options);
+                const data = await res.json();
+                log(`${method} ${endpoint} => ${JSON.stringify(data)}`, 'api');
+                return data;
+            } catch (err) {
+                log(`API Error: ${err.message}`, 'error');
+            }
+        }
+
+        function initWebSocket() {
+            const url = getBaseUrl().replace('http', 'ws');
+            if (ws) ws.close();
+            
+            ws = new WebSocket(url);
+            
+            ws.onopen = () => {
+                document.getElementById('wsStatus').innerText = 'WS Connected';
+                document.getElementById('wsStatus').style.color = 'green';
+                log('WebSocket connected');
+            };
+            
+            ws.onclose = () => {
+                document.getElementById('wsStatus').innerText = 'WS Disconnected';
+                document.getElementById('wsStatus').style.color = 'red';
+                log('WebSocket disconnected');
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'progress') {
+                    // Update progress log less frequently or use a specific UI
+                    // For now just log it
+                    // log(`Progress: ${msg.data.percent}% (${msg.data.file})`, 'progress');
+                    // Only log every 10% or complete
+                    if (msg.data.percent % 10 === 0) {
+                         log(`Progress: ${msg.data.percent}% - ${msg.data.file}`, 'progress');
+                    }
+                } else {
+                    log(JSON.stringify(msg), 'event');
+                }
+            };
+        }
+
+        // Actions
+        async function listPorts() {
+            const ports = await apiCall('/ports');
+            if (ports) {
+                const html = ports.map(p => `<small>${p.path} (${p.manufacturer || ''})</small>`).join('<br>');
+                document.getElementById('portList').innerHTML = html;
+            }
+        }
+
+        async function connectSerial() {
+            const path = document.getElementById('serialPort').value;
+            const baudRate = parseInt(document.getElementById('baudRate').value);
+            await apiCall('/connect', 'POST', { path, baudRate });
+        }
+
+        async function disconnectSerial() {
+            await apiCall('/disconnect', 'POST');
+        }
+
+        async function getStatus() {
+            await apiCall('/status');
+        }
+
+        async function setConfig() {
+            const chunkSize = parseInt(document.getElementById('chunkSize').value);
+            const windowSize = parseInt(document.getElementById('windowSize').value);
+            await apiCall('/config', 'POST', { chunkSize, windowSize });
+        }
+
+        async function sendChat() {
+            const text = document.getElementById('chatMsg').value;
+            await apiCall('/send/chat', 'POST', { text });
+        }
+
+        async function sendFile() {
+            const path = document.getElementById('filePath').value;
+            await apiCall('/send/file', 'POST', { path });
+        }
+
+        // Auto connect WS on load
+        window.onload = initWebSocket;
+    </script>
+</body>
+</html>

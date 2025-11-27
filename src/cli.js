@@ -53,6 +53,19 @@ controller.on('pong', (data) => {
     cliLogger.info(logMsg);
 });
 
+controller.on('progress', (data) => {
+    const barLength = 30;
+    const filledLength = Math.floor(barLength * data.percent / 100);
+    const bar = '█'.repeat(filledLength) + '░'.repeat(barLength - filledLength);
+    const action = data.type === 'send' ? 'Sending' : 'Receiving';
+    process.stdout.write(`\r[File] ${action}: ${data.file} [${bar}] ${data.percent}%`);
+});
+
+controller.on('complete', (data) => {
+    process.stdout.write('\n');
+    console.log(`[File] Transfer complete: ${data.file}`);
+});
+
 controller.on('frame', (frame) => {
     // 过滤掉 CHAT (0x10)、PING/PONG (0x00/0x01) 和所有文件传输相关的包 (0x20-0x24)
     // 以保持终端清爽,文件传输进度由 FileService 的日志显示
