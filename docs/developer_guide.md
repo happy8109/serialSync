@@ -16,7 +16,7 @@
 - [x] **断点续传**: 基于文件 Hash 的断点恢复 (v2.2)。
 
 ### 未来规划 (Phase 4 - API & UI)
-- [ ] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。
+- [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。
 - [ ] **Web UI**: 基于 React/Vue 的可视化控制台。
 
 ---
@@ -34,6 +34,16 @@
 npm install
 ```
 
+### 2.3 启动 API Server (推荐)
+```bash
+# 启动服务器 (默认端口 3000)
+node src/server/index.js
+
+# 启动并自动连接串口 (方便测试)
+node src/server/index.js COM1 3000
+```
+访问 `test/api_client.html` 进行测试。
+
 ---
 
 ## 3. 测试指南
@@ -48,15 +58,14 @@ node test/simulated_env.js
 ### 3.2 真实/虚拟串口测试
 需要成对的串口 (如 `COM1` <-> `COM2`)。
 
-**步骤**:
-1.  打开终端 A (模拟设备 1):
-    ```bash
-    node src/cli.js COM1
-    ```
-2.  打开终端 B (模拟设备 2):
-    ```bash
-    node src/cli.js COM2
-    ```
+**方式 A: 使用 CLI (交互式)**
+1.  打开终端 A: `node src/cli.js COM1`
+2.  打开终端 B: `node src/cli.js COM2`
+
+**方式 B: 使用 API Server (Web 控制)**
+1.  打开终端 A: `node src/server/index.js COM1 3000`
+2.  打开终端 B: `node src/server/index.js COM2 3001`
+3.  打开浏览器访问 `test/api_client.html`，分别连接到两个端口。
 
 ---
 
@@ -77,6 +86,12 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2025-11-28 (v2.3)**
+*   **API Server**: 实现了基于 Express/WebSocket 的 API 服务层。
+*   **Core Refactor**: 重构 `FileTransferService` 为事件驱动，支持实时进度推送。
+*   **Auto Connect**: Server 支持通过命令行参数或配置文件自动连接串口。
+*   **Test Client**: 新增 `test/api_client.html` 用于 API 功能验证。
 
 **2025-11-25 (v2.1)**
 *   **文件传输优化**: 引入滑动窗口机制 (Window=50)，大幅减少 ACK 数量。
@@ -105,6 +120,9 @@ CLI 启动后进入交互式 REPL 模式。
 | `POST` | `/api/config` | 修改系统配置 | `{ "chunkSize": 4096, "windowSize": 100 }` |
 | `POST` | `/api/send/chat` | 发送消息 | `{ "text": "Hello" }` |
 | `POST` | `/api/send/file` | 发送文件 | `{ "path": "C:/data.bin" }` (或 multipart 上传) |
+| `POST` | `/api/transfer/:fileId/pause` | 暂停传输 | - |
+| `POST` | `/api/transfer/:fileId/resume` | 恢复传输 | - |
+| `POST` | `/api/transfer/:fileId/cancel` | 取消传输 | - |
 
 ### 6.3 WebSocket 事件
 用于实时数据推送。

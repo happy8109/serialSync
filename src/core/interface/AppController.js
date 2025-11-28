@@ -66,6 +66,10 @@ class AppController extends EventEmitter {
         this.fileTransferService.on('complete', (data) => {
             this.emit('complete', data);
         });
+
+        this.fileTransferService.on('error', (err) => {
+            this.emit('error', err);
+        });
     }
 
     /**
@@ -120,6 +124,18 @@ class AppController extends EventEmitter {
      */
     async sendFile(filePath) {
         return await this.fileTransferService.sendFile(filePath);
+    }
+
+    pauseFileTransfer(fileId) {
+        return this.fileTransferService.pause(fileId);
+    }
+
+    resumeFileTransfer(fileId) {
+        return this.fileTransferService.resume(fileId);
+    }
+
+    cancelFileTransfer(fileId) {
+        return this.fileTransferService.cancel(fileId);
     }
 
     /**

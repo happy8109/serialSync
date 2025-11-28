@@ -123,6 +123,60 @@ class FileTransferService extends EventEmitter {
         return fileId;
     }
 
+    pause(fileId) {
+        const session = this.sendSessions.get(fileId);
+        if (session) {
+            session.status = 'paused';
+            bridgeLogger.info(`Paused transfer for ${fileId}`);
+            return true;
+        }
+        return false;
+    }
+
+    resume(fileId) {
+        const session = this.sendSessions.get(fileId);
+        if (session && session.status === 'paused') {
+            session.status = 'sending';
+            bridgeLogger.info(`Resumed transfer for ${fileId}`);
+            this._sendWindow(session);
+            return true;
+        }
+        return false;
+    }
+
+    cancel(fileId) {
+        // 检查发送会话
+        if (this.sendSessions.has(fileId)) {
+            const session = this.sendSessions.get(fileId);
+            if (session.fd) {
+                try { fs.closeSync(session.fd); } catch (e) { }
+            }
+            this.sendSessions.delete(fileId);
+            // 发送 FIN 通知对方
+            this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' });
+            bridgeLogger.info(`Cancelled sending ${fileId}`);
+            this.emit('error', { message: `Transfer cancelled for ${fileId}` });
+            return true;
+        }
+        // 检查接收会话
+        if (this.recvSessions.has(fileId)) {
+            const session = this.recvSessions.get(fileId);
+            if (session.fd) {
+                try { fs.closeSync(session.fd); } catch (e) { }
+            }
+            // 清理临时文件
+            try {
+                if (fs.existsSync(session.savePath)) fs.unlinkSync(session.savePath);
+                if (fs.existsSync(session.metaPath)) fs.unlinkSync(session.metaPath);
+            } catch (e) { }
+            this.recvSessions.delete(fileId);
+            bridgeLogger.info(`Cancelled receiving ${fileId}`);
+            this.emit('error', { message: `Transfer cancelled for ${fileId}` });
+            return true;
+        }
+        return false;
+    }
+
     // --- 内部处理逻辑 ---
 
     _handleOffer(frame) {
@@ -212,6 +266,7 @@ class FileTransferService extends EventEmitter {
     }
 
     _sendWindow(session) {
+        if (session.status === 'paused') return;
         const limit = Math.min(session.totalChunks, session.windowStart + this.windowSize);
 
         for (let seq = session.windowStart; seq < limit; seq++) {
@@ -338,6 +393,10 @@ class FileTransferService extends EventEmitter {
 
     _handleFin(frame) {
         const req = JSON.parse(frame.body.toString());
+        if (req.error === 'cancelled') {
+            this.cancel(req.id);
+            return;
+        }
         const session = this.recvSessions.get(req.id);
         if (!session) return;
 

@@ -8,6 +8,9 @@ const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
 const cors = require('cors');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 const AppController = require('../core/interface/AppController');
 const { logger } = require('../utils/logger');
 
@@ -33,6 +36,21 @@ class ApiServer {
 
     _setupRoutes() {
         const router = express.Router();
+
+        // 配置上传
+        const uploadDir = path.join(process.cwd(), 'uploads');
+        if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
+
+        const upload = multer({
+            storage: multer.diskStorage({
+                destination: (req, file, cb) => cb(null, uploadDir),
+                filename: (req, file, cb) => {
+                    // 修复中文文件名乱码: Multer 默认使用 latin1，需转回 utf8
+                    const originalName = Buffer.from(file.originalname, 'latin1').toString('utf8');
+                    cb(null, originalName);
+                }
+            })
+        });
 
         // 1. 获取串口列表
         router.get('/ports', async (req, res) => {
@@ -85,13 +103,19 @@ class ApiServer {
             res.json({ success: true });
         });
 
-        // 6. 发送文件 (简单版：仅支持服务器本地路径)
-        // TODO: 支持 multipart 上传
-        router.post('/send/file', async (req, res) => {
-            const { path } = req.body;
-            if (!path) return res.status(400).json({ error: 'Path is required' });
+        // 6. 发送文件 (支持 multipart 上传或本地路径)
+        router.post('/send/file', upload.single('file'), async (req, res) => {
+            let filePath;
+            if (req.file) {
+                filePath = req.file.path;
+            } else if (req.body.path) {
+                filePath = req.body.path;
+            } else {
+                return res.status(400).json({ error: 'File or path is required' });
+            }
+
             try {
-                const fileId = await this.controller.sendFile(path);
+                const fileId = await this.controller.sendFile(filePath);
                 res.json({ success: true, fileId });
             } catch (err) {
                 res.status(500).json({ error: err.message });
@@ -101,6 +125,22 @@ class ApiServer {
         // 7. 获取状态
         router.get('/status', (req, res) => {
             res.json(this.controller.getStatus());
+        });
+
+        // 8. 传输控制
+        router.post('/transfer/:fileId/pause', (req, res) => {
+            const success = this.controller.pauseFileTransfer(req.params.fileId);
+            res.json({ success });
+        });
+
+        router.post('/transfer/:fileId/resume', (req, res) => {
+            const success = this.controller.resumeFileTransfer(req.params.fileId);
+            res.json({ success });
+        });
+
+        router.post('/transfer/:fileId/cancel', (req, res) => {
+            const success = this.controller.cancelFileTransfer(req.params.fileId);
+            res.json({ success });
         });
 
         this.app.use('/api', router);
@@ -151,6 +191,12 @@ class ApiServer {
 
         this.controller.on('complete', (data) => {
             this._broadcast('complete', data);
+        });
+
+        // 捕获错误，防止进程崩溃
+        this.controller.on('error', (err) => {
+            this.logger.error(`Controller Error: ${err.message}`);
+            this._broadcast('error', { message: err.message });
         });
     }
 
