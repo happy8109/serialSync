@@ -1,17 +1,43 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>SerialSync API Test</title>
     <style>
-        body { font-family: monospace; padding: 20px; }
-        .panel { border: 1px solid #ccc; padding: 10px; margin-bottom: 10px; }
-        .log { height: 300px; overflow-y: scroll; border: 1px solid #999; background: #f0f0f0; padding: 5px; white-space: pre-wrap; }
-        input, button { margin: 5px 0; }
-        label { display: inline-block; width: 100px; }
+        body {
+            font-family: monospace;
+            padding: 20px;
+        }
+
+        .panel {
+            border: 1px solid #ccc;
+            padding: 10px;
+            margin-bottom: 10px;
+        }
+
+        .log {
+            height: 300px;
+            overflow-y: scroll;
+            border: 1px solid #999;
+            background: #f0f0f0;
+            padding: 5px;
+            white-space: pre-wrap;
+        }
+
+        input,
+        button {
+            margin: 5px 0;
+        }
+
+        label {
+            display: inline-block;
+            width: 100px;
+        }
     </style>
 </head>
+
 <body>
     <h1>SerialSync API Tester</h1>
 
@@ -78,7 +104,7 @@
                     headers: { 'Content-Type': 'application/json' }
                 };
                 if (body) options.body = JSON.stringify(body);
-                
+
                 const res = await fetch(url, options);
                 const data = await res.json();
                 log(`${method} ${endpoint} => ${JSON.stringify(data)}`, 'api');
@@ -91,15 +117,15 @@
         function initWebSocket() {
             const url = getBaseUrl().replace('http', 'ws');
             if (ws) ws.close();
-            
+
             ws = new WebSocket(url);
-            
+
             ws.onopen = () => {
                 document.getElementById('wsStatus').innerText = 'WS Connected';
                 document.getElementById('wsStatus').style.color = 'green';
                 log('WebSocket connected');
             };
-            
+
             ws.onclose = () => {
                 document.getElementById('wsStatus').innerText = 'WS Disconnected';
                 document.getElementById('wsStatus').style.color = 'red';
@@ -114,7 +140,7 @@
                     // log(`Progress: ${msg.data.percent}% (${msg.data.file})`, 'progress');
                     // Only log every 10% or complete
                     if (msg.data.percent % 10 === 0) {
-                         log(`Progress: ${msg.data.percent}% - ${msg.data.file}`, 'progress');
+                        log(`Progress: ${msg.data.percent}% - ${msg.data.file}`, 'progress');
                     }
                 } else {
                     log(JSON.stringify(msg), 'event');
@@ -165,4 +191,5 @@
         window.onload = initWebSocket;
     </script>
 </body>
+
 </html>
