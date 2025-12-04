@@ -26,5 +26,11 @@
     "level": "info",
     "console": true,
     "file": true
+  },
+  "server": {
+    "port": 3000
+  },
+  "web": {
+    "port": 5173
   }
 }

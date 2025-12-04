@@ -170,6 +170,10 @@ class FileTransferService extends EventEmitter {
                 if (fs.existsSync(session.metaPath)) fs.unlinkSync(session.metaPath);
             } catch (e) { }
             this.recvSessions.delete(fileId);
+
+            // 发送 FIN 通知发送方停止
+            this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' });
+
             bridgeLogger.info(`Cancelled receiving ${fileId}`);
             this.emit('error', { message: `Transfer cancelled for ${fileId}` });
             return true;
@@ -279,6 +283,7 @@ class FileTransferService extends EventEmitter {
         // 发送进度事件
         const percent = Math.round(session.windowStart / session.totalChunks * 100);
         this.emit('progress', {
+            fileId: session.fileId,
             type: 'send',
             file: path.basename(session.filePath),
             current: session.windowStart,
@@ -333,6 +338,7 @@ class FileTransferService extends EventEmitter {
         if (percent !== session.lastPercent || session.receivedChunks % 50 === 0) {
             session.lastPercent = percent;
             this.emit('progress', {
+                fileId: session.id,
                 type: 'receive',
                 file: session.name,
                 current: session.receivedChunks,
@@ -343,6 +349,7 @@ class FileTransferService extends EventEmitter {
 
         if (session.receivedChunks === session.totalChunks) {
             this.emit('complete', {
+                fileId: session.id,
                 type: 'receive',
                 file: session.name
             });
@@ -379,6 +386,7 @@ class FileTransferService extends EventEmitter {
         if (session.windowStart >= session.totalChunks) {
             bridgeLogger.info(`File transfer complete: ${session.filePath}`);
             this.emit('complete', {
+                fileId: session.fileId,
                 type: 'send',
                 file: path.basename(session.filePath)
             });

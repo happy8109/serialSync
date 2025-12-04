@@ -12,7 +12,7 @@ const args = process.argv.slice(2);
 const serialPortArg = args[0];
 const httpPortArg = args[1];
 
-const port = httpPortArg || process.env.PORT || (config.has('server.port') ? config.get('server.port') : 3000);
+const port = httpPortArg || process.env.API_PORT || process.env.PORT || (config.has('server.port') ? config.get('server.port') : 3000);
 
 const server = new ApiServer(port);
 

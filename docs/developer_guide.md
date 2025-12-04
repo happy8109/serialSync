@@ -19,6 +19,8 @@
 - [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。
 - [ ] **Web UI**: 基于 React/Vue 的可视化控制台。
 
+详细开发计划请参考: [Implementation Plan](./implementation_plan.md)
+
 ---
 
 ## 2. 快速开始
@@ -134,47 +136,11 @@ CLI 启动后进入交互式 REPL 模式。
 
 ---
 
-## 7. Web UI 设计规范 (Phase 4)
+## 7. Web UI 架构 (Phase 4)
 
-基于 React + Vite 的现代化前端界面，定位为**高效、稳定的工具软件**。
+前端项目位于 `src/web` 目录下，采用 React + Vite + TailwindCSS 技术栈。
 
-### 7.1 设计原则
-1.  **离线优先 (Offline First)**: 生产环境无互联网连接，所有资源（字体、图标、JS库）必须本地化打包，严禁使用 CDN。
-2.  **兼容性 (Legacy Support)**: 适配低版本浏览器（目标 Chrome 64+），使用 `@vitejs/plugin-legacy` 进行 Polyfill 注入。
-3.  **高信息密度 (High Density)**: 界面紧凑，减少留白，一屏展示更多关键信息（传输列表、日志流）。
-4.  **低延迟 (Low Latency)**: 操作响应迅速，进度条平滑，无多余装饰性动画。
-
-### 7.2 技术栈
-*   **Framework**: React 18 + Vite
-*   **Styling**: Tailwind CSS (Utility-first, 易于维护)
-*   **Components**: Shadcn/ui (基于 Radix UI，无样式依赖，易于定制)
-*   **State Management**: Zustand (轻量级全局状态管理)
-*   **Icons**: Lucide React (SVG Icons)
-
-### 7.3 功能模块规划
-
-#### A. 布局 (Layout)
-*   **Sidebar**: 极简图标导航 (Chat, File, API, Settings) + 底部连接状态指示。
-*   **Main View**: 占据 95% 区域，无干扰。
-
-#### B. 核心功能区
-1.  **Chat (Default View)**:
-    *   纯文本消息流，用于快速验证链路。
-    *   **多行支持**: 输入框支持 `Shift+Enter` 换行，`Enter` 发送；消息显示保留换行格式 (`pre-wrap`)。
-2.  **File Transfer**:
-    *   **Active Transfers**: 紧凑列表，显示 `文件名 | 进度条 | 速度 (MB/s) | 剩余时间 | [Pause/Cancel]`。
-    *   **Dropzone**: 底部拖拽区域，支持直接拖入文件发送。
-3.  **API Forwarder (Debugger)**:
-    *   类似 Postman 的精简界面。
-    *   **Request**: Service ID 输入框 + JSON 参数编辑器。
-    *   **Response**: 格式化 JSON 视图 + RTT 统计。
-    *   **History**: 最近调用记录。
-4.  **Dashboard (Live Stream)**:
-    *   实时展示所有信道占用情况（QoS 可视化）。
-    *   显示当前正在进行的 P0 (Ping), P1 (Chat/API), P2 (File) 任务。
-
-### 7.4 目录结构
-采用 Feature-based 结构，便于扩展。
+### 7.1 目录结构
 ```text
 src/web/
 ├── public/              # 静态资源
@@ -182,16 +148,24 @@ src/web/
 │   ├── components/      # 通用 UI 组件 (Button, Card, Input)
 │   ├── lib/             # 工具库 (utils, constants)
 │   ├── features/        # 核心业务模块
-│   │   ├── chat/        # 聊天模块
-│   │   ├── file-transfer/ # 文件传输模块
+│   │   ├── chat/        # 聊天模块 (已实现)
+│   │   ├── file-transfer/ # 文件传输模块 (已实现)
 │   │   ├── api-forwarder/ # API 转发模块
-│   │   └── dashboard/     # 仪表盘与任务流
+│   │   └── dashboard/     # 仪表盘与任务流 (已实现 LiveTaskStream)
 │   ├── layout/          # 布局组件
 │   ├── services/        # API 客户端与 WebSocket 封装
+│   ├── store/           # 状态管理 (Zustand)
 │   └── App.jsx          # 路由配置
 ├── vite.config.js       # 构建配置 (含 legacy 插件)
 └── tailwind.config.js   # 样式配置
 ```
+
+### 7.2 前后端交互机制
+前端通过 `WebSocketService` 保持与 API Server 的长连接，实现全双工通信：
+1.  **状态同步**: 监听 `status` 事件更新连接状态。
+2.  **实时日志**: 监听 `log` 和 `error` 事件，在 `LiveTaskStream` 组件中实时展示系统活动。
+3.  **聊天消息**: 监听 `chat` 事件更新消息列表；发送消息时调用 `POST /api/send/chat`。
+4.  **文件传输**: 监听 `progress` 和 `complete` 事件更新传输进度。
 
 ### 7.5 任务优先级管理 (QoS)
 前端需配合后端 `PacketScheduler` 进行可视化展示：

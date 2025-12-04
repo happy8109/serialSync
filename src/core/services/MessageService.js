@@ -35,6 +35,7 @@ class MessageService extends EventEmitter {
             const text = frame.body.toString('utf8');
             // 向上层抛出业务事件
             this.emit('message', {
+                id: Date.now() + '-' + Math.random().toString(36).substr(2, 9),
                 text,
                 timestamp: Date.now()
             });
