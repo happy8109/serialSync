@@ -143,6 +143,14 @@ class ApiServer {
             res.json({ success });
         });
 
+        // 9. 打开文件/目录
+        router.post('/open', (req, res) => {
+            const { path } = req.body;
+            if (!path) return res.status(400).json({ error: 'Path is required' });
+            this.controller.openPath(path);
+            res.json({ success: true });
+        });
+
         this.app.use('/api', router);
     }
 
@@ -198,6 +206,15 @@ class ApiServer {
             this.logger.error(`Controller Error: ${err.message}`);
             this._broadcast('error', { message: err.message });
         });
+
+        this.controller.on('cancelled', (data) => {
+            this._broadcast('cancelled', data);
+        });
+
+        // 定期广播状态 (每秒)
+        setInterval(() => {
+            this._broadcast('status', this.controller.getStatus());
+        }, 1000);
     }
 
     start() {

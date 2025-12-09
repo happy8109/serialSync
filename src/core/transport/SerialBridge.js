@@ -84,6 +84,7 @@ class SerialBridge extends EventEmitter {
                 }
 
                 this.isConnected = true;
+                this.baudRate = finalConfig.baudRate; // Store baudRate
                 this.reconnectAttempts = 0; // 重置重连次数
                 this._setupListeners();
                 this.emit('open');

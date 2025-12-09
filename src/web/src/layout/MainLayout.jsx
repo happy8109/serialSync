@@ -5,7 +5,7 @@ import { cn } from '../lib/utils';
 import SettingsModal from '../features/settings/SettingsModal';
 
 const MainLayout = ({ children }) => {
-    const { isConnected, port } = useAppStore();
+    const { isConnected, port, baudRate, stats } = useAppStore();
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
     return (
@@ -20,16 +20,40 @@ const MainLayout = ({ children }) => {
                 </div>
 
                 <div className="flex items-center gap-4">
-                    <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-full border border-border/50">
-                        <div
-                            className={cn(
-                                "w-2.5 h-2.5 rounded-full transition-colors",
-                                isConnected ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" : "bg-red-500"
-                            )}
-                        />
-                        <span className="text-xs font-medium text-muted-foreground font-mono">
-                            {isConnected ? port : 'DISCONNECTED'}
-                        </span>
+                    <div className="flex items-center gap-4 text-xs font-mono text-muted-foreground">
+                        {isConnected && (
+                            <>
+                                <div className="flex items-center gap-2 px-2 py-1 bg-muted/30 rounded border border-border/30">
+                                    <span>{baudRate} bps</span>
+                                </div>
+                                <div className="flex items-center gap-3 px-2 py-1 bg-muted/30 rounded border border-border/30">
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-green-500">RX:</span> {(stats.rxBytes / 1024).toFixed(1)} KB
+                                    </span>
+                                    <span className="w-px h-3 bg-border/50"></span>
+                                    <span className="flex items-center gap-1">
+                                        <span className="text-blue-500">TX:</span> {(stats.txBytes / 1024).toFixed(1)} KB
+                                    </span>
+                                    {stats.crcErrors > 0 && (
+                                        <>
+                                            <span className="w-px h-3 bg-border/50"></span>
+                                            <span className="text-red-500">ERR: {stats.crcErrors}</span>
+                                        </>
+                                    )}
+                                </div>
+                            </>
+                        )}
+                        <div className="flex items-center gap-2 px-3 py-1.5 bg-muted/50 rounded-full border border-border/50">
+                            <div
+                                className={cn(
+                                    "w-2.5 h-2.5 rounded-full transition-colors",
+                                    isConnected ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" : "bg-red-500"
+                                )}
+                            />
+                            <span className="font-medium">
+                                {isConnected ? port : 'DISCONNECTED'}
+                            </span>
+                        </div>
                     </div>
 
                     <button

@@ -38,8 +38,8 @@ class AppController extends EventEmitter {
 
     _setupListeners() {
         // 监听 Bridge 状态
-        this.bridge.on('open', () => this.emit('status', { connected: true }));
-        this.bridge.on('close', () => this.emit('status', { connected: false }));
+        this.bridge.on('open', () => this.emit('status', this.getStatus()));
+        this.bridge.on('close', () => this.emit('status', this.getStatus()));
         this.bridge.on('error', (err) => this.emit('error', err));
 
         // 监听收到数据帧 -> 分发给服务
@@ -69,6 +69,11 @@ class AppController extends EventEmitter {
 
         this.fileTransferService.on('error', (err) => {
             this.emit('error', err);
+        });
+
+        this.fileTransferService.on('cancelled', (data) => {
+            appLogger.info(`Transfer cancelled: ${data.fileId}`);
+            this.emit('cancelled', data);
         });
     }
 
@@ -156,10 +161,32 @@ class AppController extends EventEmitter {
     /**
      * 获取系统状态
      */
+    /**
+     * 打开文件或目录
+     */
+    openPath(targetPath) {
+        const { exec } = require('child_process');
+        let command;
+        if (process.platform === 'win32') {
+            command = `start "" "${targetPath}"`;
+        } else if (process.platform === 'darwin') {
+            command = `open "${targetPath}"`;
+        } else {
+            command = `xdg-open "${targetPath}"`;
+        }
+
+        exec(command, (err) => {
+            if (err) {
+                appLogger.error(`Failed to open path: ${targetPath}`, err);
+            }
+        });
+    }
+
     getStatus() {
         return {
             connected: this.bridge.isConnected,
             port: this.bridge.port ? this.bridge.port.path : null,
+            baudRate: this.bridge.baudRate,
             bridgeStats: this.bridge.stats,
             queueStats: this.scheduler.getStatus()
         };

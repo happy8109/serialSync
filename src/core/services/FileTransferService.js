@@ -145,37 +145,40 @@ class FileTransferService extends EventEmitter {
     }
 
     cancel(fileId) {
-        // 检查发送会话
+        let success = false;
+        // Check sending sessions
         if (this.sendSessions.has(fileId)) {
             const session = this.sendSessions.get(fileId);
             if (session.fd) {
                 try { fs.closeSync(session.fd); } catch (e) { }
             }
             this.sendSessions.delete(fileId);
-            // 发送 FIN 通知对方
+            // Send FIN
             this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' });
             bridgeLogger.info(`Cancelled sending ${fileId}`);
-            this.emit('error', { message: `Transfer cancelled for ${fileId}` });
-            return true;
+            success = true;
         }
-        // 检查接收会话
-        if (this.recvSessions.has(fileId)) {
+        // Check receiving sessions
+        else if (this.recvSessions.has(fileId)) {
             const session = this.recvSessions.get(fileId);
             if (session.fd) {
                 try { fs.closeSync(session.fd); } catch (e) { }
             }
-            // 清理临时文件
+            // Cleanup temp files
             try {
                 if (fs.existsSync(session.savePath)) fs.unlinkSync(session.savePath);
                 if (fs.existsSync(session.metaPath)) fs.unlinkSync(session.metaPath);
             } catch (e) { }
             this.recvSessions.delete(fileId);
 
-            // 发送 FIN 通知发送方停止
+            // Send FIN
             this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' });
-
             bridgeLogger.info(`Cancelled receiving ${fileId}`);
-            this.emit('error', { message: `Transfer cancelled for ${fileId}` });
+            success = true;
+        }
+
+        if (success) {
+            this.emit('cancelled', { fileId });
             return true;
         }
         return false;
@@ -192,6 +195,15 @@ class FileTransferService extends EventEmitter {
 
         const savePath = path.join(saveDir, offer.name + '.part');
         const metaPath = path.join(saveDir, offer.name + '.meta');
+
+        // Check for collision with existing sessions
+        for (const [id, session] of this.recvSessions.entries()) {
+            if (session.savePath === savePath) {
+                bridgeLogger.warn(`Collision detected: ${offer.name} is already being received (session ${id}). Cancelling old session.`);
+                this.cancel(id); // Force cancel the old session to release the file lock
+                break;
+            }
+        }
 
         let receivedBitmap = new Set();
         let receivedChunks = 0;
@@ -213,10 +225,16 @@ class FileTransferService extends EventEmitter {
         }
 
         let fd;
-        if (isResume) {
-            fd = fs.openSync(savePath, 'r+');
-        } else {
-            fd = fs.openSync(savePath, 'w');
+        try {
+            if (isResume) {
+                fd = fs.openSync(savePath, 'r+');
+            } else {
+                fd = fs.openSync(savePath, 'w');
+            }
+        } catch (err) {
+            bridgeLogger.error(`Failed to open file for writing: ${savePath}`, err);
+            // Ignore this offer if we can't open the file
+            return;
         }
 
         this.recvSessions.set(offer.id, {
@@ -351,7 +369,8 @@ class FileTransferService extends EventEmitter {
             this.emit('complete', {
                 fileId: session.id,
                 type: 'receive',
-                file: session.name
+                file: session.name,
+                fullPath: session.savePath.replace('.part', '')
             });
             this._sendAck(session);
         }
@@ -388,7 +407,8 @@ class FileTransferService extends EventEmitter {
             this.emit('complete', {
                 fileId: session.fileId,
                 type: 'send',
-                file: path.basename(session.filePath)
+                file: path.basename(session.filePath),
+                fullPath: session.filePath
             });
             this._sendJson(TYPE.FILE_FIN, { id: session.fileId });
             fs.closeSync(session.fd);

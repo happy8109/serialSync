@@ -4,9 +4,13 @@ const useAppStore = create((set) => ({
     // Connection Status
     isConnected: false,
     port: null,
+    baudRate: null,
+    stats: { rxBytes: 0, txBytes: 0, crcErrors: 0 },
     setConnectionStatus: (status) => set((state) => ({
         isConnected: status.connected !== undefined ? status.connected : state.isConnected,
-        port: status.port !== undefined ? status.port : state.port
+        port: status.port !== undefined ? status.port : state.port,
+        baudRate: status.baudRate !== undefined ? status.baudRate : state.baudRate,
+        stats: status.bridgeStats !== undefined ? status.bridgeStats : state.stats
     })),
 
     // Active Tab
@@ -29,12 +33,15 @@ const useAppStore = create((set) => ({
     updateTransfer: (id, data) => set((state) => {
         const index = state.transfers.findIndex(t => t.id === id);
         if (index === -1) {
-            return { transfers: [...state.transfers, { id, status: 'sending', ...data }] };
+            return { transfers: [{ id, status: 'sending', ...data }, ...state.transfers] };
         }
         const newTransfers = [...state.transfers];
         newTransfers[index] = { ...newTransfers[index], ...data };
         return { transfers: newTransfers };
     }),
+    removeTransfer: (id) => set((state) => ({
+        transfers: state.transfers.filter(t => t.id !== id)
+    })),
 }));
 
 export default useAppStore;

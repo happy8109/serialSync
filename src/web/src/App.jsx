@@ -14,12 +14,12 @@ function App() {
                 {/* Main Grid */}
                 <div className="flex-1 grid grid-cols-12 gap-0 min-h-0">
                     {/* Left Panel: Chat (7 cols) */}
-                    <div className="col-span-7 border-r border-border bg-background flex flex-col min-w-0">
+                    <div className="col-span-7 border-r border-border bg-background flex flex-col min-w-0 overflow-hidden">
                         <ChatView />
                     </div>
 
                     {/* Right Panel: Tools (5 cols) */}
-                    <div className="col-span-5 flex flex-col bg-muted/30 min-w-0">
+                    <div className="col-span-5 flex flex-col bg-muted/30 min-w-0 overflow-hidden">
                         {/* File Transfer (Full Height) */}
                         <div className="flex-1 min-h-0">
                             <TransferList />

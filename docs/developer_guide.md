@@ -89,6 +89,12 @@ CLI 启动后进入交互式 REPL 模式。
 
 ## 5. 最近变更 (Changelog Summary)
 
+**2025-12-09 (v2.3.1) - UI & Stability Fixes**
+*   **Web UI Fixes**: 修复传输列表滚动条不可见及布局溢出问题；优化列表排序为倒序。
+*   **Stability**: 修复 React StrictMode 下 WebSocket 重复连接导致的双重日志问题。
+*   **Dev Experience**: 屏蔽开发环境下 Vite 代理的 ECONNRESET/ECONNABORTED 噪音报错。
+*   **Config**: 添加 `.vscode/settings.json` 以消除 Tailwind CSS 误报。
+
 **2025-11-28 (v2.3)**
 *   **API Server**: 实现了基于 Express/WebSocket 的 API 服务层。
 *   **Core Refactor**: 重构 `FileTransferService` 为事件驱动，支持实时进度推送。

@@ -1,8 +1,14 @@
 import React from 'react';
-import { Pause, Play, X, File, ArrowUp, ArrowDown, CheckCircle2 } from 'lucide-react';
+import { Pause, Play, X, File, ArrowUp, ArrowDown, CheckCircle2, FolderOpen } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
-const TransferItem = ({ transfer, onPause, onResume, onCancel }) => {
+const getDirectory = (path) => {
+    if (!path) return '';
+    const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
+    return lastSlash > -1 ? path.substring(0, lastSlash) : path;
+};
+
+const TransferItem = ({ transfer, onPause, onResume, onCancel, onOpen }) => {
     const isSending = transfer.direction === 'send';
     const isPaused = transfer.status === 'paused';
     const isError = transfer.status === 'error';
@@ -24,9 +30,6 @@ const TransferItem = ({ transfer, onPause, onResume, onCancel }) => {
                     <span className="font-medium truncate text-sm" title={transfer.name}>
                         {transfer.name}
                     </span>
-                    <span className="text-xs text-muted-foreground font-mono">
-                        {transfer.speed || '0 KB/s'}
-                    </span>
                 </div>
 
                 {/* Progress Bar */}
@@ -42,36 +45,63 @@ const TransferItem = ({ transfer, onPause, onResume, onCancel }) => {
 
                 <div className="flex justify-between items-center mt-1 text-xs text-muted-foreground">
                     {isDone ? (
-                        <span className="text-green-500 flex items-center gap-1 font-bold">
-                            <CheckCircle2 size={14} /> 传输完成
-                        </span>
+                        <div className="flex items-center gap-2">
+                            <span className="text-green-500 flex items-center gap-1 font-bold">
+                                <CheckCircle2 size={14} /> 传输完成
+                            </span>
+
+                        </div>
                     ) : (
                         <span>{transfer.percent}% • {transfer.size}</span>
                     )}
-                    {!isDone && <span>{transfer.eta || '--:--'}</span>}
-                </div>
-            </div>
 
-            {/* Actions */}
-            <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                {!isDone && !isError && (
-                    <>
-                        {isSending && (
-                            isPaused ? (
-                                <button onClick={() => onResume(transfer.id)} className="p-2 hover:bg-secondary rounded-full text-green-400" title="Resume">
-                                    <Play size={16} />
-                                </button>
-                            ) : (
-                                <button onClick={() => onPause(transfer.id)} className="p-2 hover:bg-secondary rounded-full text-yellow-400" title="Pause">
-                                    <Pause size={16} />
-                                </button>
-                            )
+                    {/* Speed and Actions (Bottom Right) */}
+                    <div className="flex items-center gap-3">
+                        {!isDone && transfer.speed && (
+                            <span className="font-mono">{transfer.speed}</span>
                         )}
-                        <button onClick={() => onCancel(transfer.id)} className="p-2 hover:bg-secondary rounded-full text-red-400" title="Cancel">
-                            <X size={16} />
-                        </button>
-                    </>
-                )}
+
+                        {/* Actions */}
+                        {!isDone && !isError && (
+                            <div className="flex gap-1">
+                                {isSending && (
+                                    isPaused ? (
+                                        <button onClick={() => onResume(transfer.id)} className="p-1 hover:bg-secondary rounded text-green-400" title="Resume">
+                                            <Play size={14} />
+                                        </button>
+                                    ) : (
+                                        <button onClick={() => onPause(transfer.id)} className="p-1 hover:bg-secondary rounded text-yellow-400" title="Pause">
+                                            <Pause size={14} />
+                                        </button>
+                                    )
+                                )}
+                                <button onClick={() => onCancel(transfer.id)} className="p-1 hover:bg-secondary rounded text-red-400" title="Cancel">
+                                    <X size={14} />
+                                </button>
+                            </div>
+                        )}
+
+                        {/* Open Buttons (Done state) */}
+                        {isDone && transfer.fullPath && (
+                            <div className="flex gap-1">
+                                <button
+                                    onClick={() => onOpen(transfer.fullPath)}
+                                    className="p-1 hover:bg-secondary rounded text-blue-400"
+                                    title="打开文件"
+                                >
+                                    <File size={14} />
+                                </button>
+                                <button
+                                    onClick={() => onOpen(getDirectory(transfer.fullPath))}
+                                    className="p-1 hover:bg-secondary rounded text-yellow-400"
+                                    title="打开所在文件夹"
+                                >
+                                    <FolderOpen size={14} />
+                                </button>
+                            </div>
+                        )}
+                    </div>
+                </div>
             </div>
         </div>
     );

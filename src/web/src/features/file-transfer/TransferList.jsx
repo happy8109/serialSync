@@ -4,7 +4,7 @@ import TransferItem from './TransferItem';
 import Dropzone from './Dropzone';
 
 const TransferList = () => {
-    const { transfers, updateTransfer } = useAppStore();
+    const { transfers, updateTransfer, removeTransfer } = useAppStore();
 
     const handleFileSelect = async (file) => {
         const formData = new FormData();
@@ -52,9 +52,22 @@ const TransferList = () => {
     const handleCancel = async (id) => {
         try {
             await fetch(`/api/transfer/${id}/cancel`, { method: 'POST' });
-            updateTransfer(id, { status: 'error' });
+            // updateTransfer(id, { status: 'error' }); // No longer needed as we remove it
+            removeTransfer(id);
         } catch (err) {
             console.error('Failed to cancel:', err);
+        }
+    };
+
+    const handleOpen = async (path) => {
+        try {
+            await fetch('/api/open', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path })
+            });
+        } catch (err) {
+            console.error('Failed to open file:', err);
         }
     };
 
@@ -67,7 +80,7 @@ const TransferList = () => {
 
             <div className="flex-1 min-h-0 flex flex-col">
                 <h3 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">传输列表</h3>
-                <div className="flex-1 overflow-y-auto space-y-3 pr-2">
+                <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
                     {transfers.length === 0 && (
                         <div className="text-center text-muted-foreground py-10 border border-dashed border-border rounded-md">
                             暂无活动传输
@@ -80,6 +93,7 @@ const TransferList = () => {
                             onPause={handlePause}
                             onResume={handleResume}
                             onCancel={handleCancel}
+                            onOpen={handleOpen}
                         />
                     ))}
                 </div>
