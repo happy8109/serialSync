@@ -83,7 +83,7 @@ const WebSocketService = () => {
                 if (isUnmounted) return;
 
                 console.log('WebSocket disconnected, reconnecting...');
-                setConnectionStatus({ isConnected: false, port: null });
+                setConnectionStatus({ connected: false, port: null });
                 addLog({ timestamp: Date.now(), level: 'warn', tag: 'SYSTEM', message: 'WebSocket disconnected' });
                 reconnectTimer = setTimeout(connect, 3000);
             };

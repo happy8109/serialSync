@@ -6,28 +6,31 @@ import Dropzone from './Dropzone';
 const TransferList = () => {
     const { transfers, updateTransfer, removeTransfer } = useAppStore();
 
-    const handleFileSelect = async (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
+    const handleFileSelect = async (files) => {
+        const fileList = Array.isArray(files) ? files : [files];
 
-        try {
-            const response = await fetch('/api/send/file', {
-                method: 'POST',
-                body: formData
-            });
-            const data = await response.json();
+        for (const file of fileList) {
+            const formData = new FormData();
+            formData.append('file', file);
 
-            if (data.success) {
-                // Transfer started successfully, backend will send progress updates via WebSocket
-                // We can add a temporary placeholder here if needed, but WebSocket should be fast enough
-                console.log('File upload started:', data.fileId);
-            } else {
-                console.error('File upload failed:', data.error);
-                alert('文件发送失败: ' + data.error);
+            try {
+                const response = await fetch('/api/send/file', {
+                    method: 'POST',
+                    body: formData
+                });
+                const data = await response.json();
+
+                if (data.success) {
+                    // Transfer started successfully
+                    console.log('File upload started:', data.fileId);
+                } else {
+                    console.error('File upload failed:', data.error);
+                    alert(`文件 ${file.name} 发送失败: ` + data.error);
+                }
+            } catch (err) {
+                console.error('File upload error:', err);
+                alert(`文件 ${file.name} 发送出错: ` + err.message);
             }
-        } catch (err) {
-            console.error('File upload error:', err);
-            alert('文件发送出错: ' + err.message);
         }
     };
 

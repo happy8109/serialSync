@@ -8,7 +8,7 @@ const Dropzone = ({ onFileSelect }) => {
         e.stopPropagation();
 
         if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-            onFileSelect(e.dataTransfer.files[0]);
+            onFileSelect(Array.from(e.dataTransfer.files));
         }
     }, [onFileSelect]);
 
@@ -19,7 +19,7 @@ const Dropzone = ({ onFileSelect }) => {
 
     const handleFileChange = (e) => {
         if (e.target.files && e.target.files.length > 0) {
-            onFileSelect(e.target.files[0]);
+            onFileSelect(Array.from(e.target.files));
         }
     };
 
@@ -31,6 +31,7 @@ const Dropzone = ({ onFileSelect }) => {
         >
             <input
                 type="file"
+                multiple
                 className="hidden"
                 id="file-upload"
                 onChange={handleFileChange}

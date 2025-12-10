@@ -89,6 +89,11 @@ CLI 启动后进入交互式 REPL 模式。
 
 ## 5. 最近变更 (Changelog Summary)
 
+**2025-12-10 (v2.3.2) - Multi-file Selection & Status Fixes**
+*   **File Transfer**: 支持多文件选择与批量拖拽上传功能。
+*   **Status Indicator**: 修复断开连接后指示灯状态不更新的问题。
+*   **Stability**: 进一步加强 Vite 开发服务器的 WebSocket 错误屏蔽机制。
+
 **2025-12-09 (v2.3.1) - UI & Stability Fixes**
 *   **Web UI Fixes**: 修复传输列表滚动条不可见及布局溢出问题；优化列表排序为倒序。
 *   **Stability**: 修复 React StrictMode 下 WebSocket 重复连接导致的双重日志问题。

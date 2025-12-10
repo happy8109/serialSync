@@ -33,16 +33,20 @@ export default defineConfig(({ mode }) => {
                     target: `ws://127.0.0.1:${API_PORT}`,
                     ws: true,
                     configure: (proxy, _options) => {
-                        // Remove default error handler (which logs connection errors)
-                        proxy.removeAllListeners('error');
+                        // Use setTimeout to ensure we run after Vite attaches its own listeners
+                        setTimeout(() => {
+                            // Remove default error handler (which logs connection errors)
+                            proxy.removeAllListeners('error');
 
-                        proxy.on('error', (err, _req, _res) => {
-                            // Suppress ECONNRESET and ECONNABORTED errors
-                            if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.code === 'EPIPE') {
-                                return;
-                            }
-                            console.log('Proxy error:', err);
-                        });
+                            proxy.on('error', (err, _req, _res) => {
+                                // Suppress ECONNRESET and ECONNABORTED errors
+                                if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.code === 'EPIPE') {
+                                    return;
+                                }
+                                console.log('Proxy error:', err);
+                            });
+                        }, 0);
+
                         proxy.on('proxyReq', (proxyReq, req, _res) => {
                             proxyReq.on('error', (err) => {
                                 if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.code === 'EPIPE') {
@@ -52,6 +56,11 @@ export default defineConfig(({ mode }) => {
                         });
                         proxy.on('proxyReqWs', (proxyReq, req, socket, options, head) => {
                             socket.on('error', (err) => {
+                                if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.code === 'EPIPE') {
+                                    return;
+                                }
+                            });
+                            proxyReq.on('error', (err) => {
                                 if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.code === 'EPIPE') {
                                     return;
                                 }
