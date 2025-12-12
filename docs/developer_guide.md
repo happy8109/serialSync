@@ -29,10 +29,21 @@
 ## 2. 快速开始
 
 ### 2.1 环境要求
-- Node.js v14+
+- Node.js v14+ (推荐 Node.js 18.x LTS, v20+ 需要注意 Win7 兼容性)
 - 虚拟串口工具 (开发测试用):
     - Windows: [com0com](http://com0com.sourceforge.net/)
     - Linux/Mac: `socat`
+
+#### 2.1.1 Node.js 兼容性与 Windows 7 支持
+本系统后端完美兼容 **Node.js v14+**（包括 Windows 7 下的 Node.js 18.x）。
+前端构建工具链 (Vite/React) 对 Node 版本有要求，若在 **Windows 7** 或 **Node.js 18** 环境下部署，请注意：
+1. **Node.js 版本**: 建议安装 `v18.16.1` (Windows 7 可用的最后一个稳定版本)。
+2. **前端依赖降级**:
+   - `vite`: `^4.5.x`
+   - `@vitejs/plugin-react`: `^4.2.x`
+   - `react`: `^18.3.x`
+   - **移除** `react-router-dom` v7+ (仅在开发环境中需要降级，生产环境build完的静态文件无此要求)
+3. **部署提示**: 如果遇到 `EBADENGINE` 错误，请参考上述版本组合修改 `src/web/package.json`。
 
 ### 2.2 安装依赖
 ```bash
