@@ -1,6 +1,8 @@
-# SerialSync 技术参考手册 (v2.2)
+# SerialSync 技术参考手册 (v2.3)
 
 本文档整合了 SerialSync 的系统架构、通信协议规范及核心性能机制。
+
+**v2.3 新增**: API转发 (HTTP透明代理) - 详见 [api_forwarding_design.md](./api_forwarding_design.md)
 
 ---
 
@@ -61,6 +63,11 @@
 | | `0x22` | FILE_CHUNK | 文件数据 | `[FileID(36)] [Data(N)]` |
 | | `0x23` | FILE_ACK | 传输确认 | JSON: `{id, nextSeq}` |
 | | `0x24` | FILE_FIN | 传输完成 | JSON: `{id}` |
+| **API Proxy** | `0x30` | SERVICE_CALL | HTTP服务调用 | JSON: `{id, service, params}` |
+| | `0x31` | SERVICE_RESULT | 服务调用响应 | JSON: `{id, status, data, error}` |
+| | `0x32` | SERVICE_QUERY | 查询服务列表 | JSON: `{id, filter}` |
+| | `0x33` | SERVICE_LIST | 返回服务列表 | JSON: `{id, services}` |
+| | `0x34` | SERVICE_CHUNK | 大数据分片 | JSON: `{id, seq, total, data}` |
 
 ---
 
@@ -94,3 +101,45 @@ v2.2 新增功能，基于文件 Hash 和元数据文件：
 | **标准 (默认)** | 50 | 1024 B | 每 20 包 |
 | **高质量链路** | 100 | 2048 B | 每 50 包 |
 | **低质量/无线** | 20 | 512 B | 每 10 包 |
+
+---
+
+## 4. API 转发 (HTTP 透明代理) - v2.3
+
+### 4.1 核心概念
+
+API转发功能允许串口两端设备通过串口访问对端主机上的本地HTTP服务。两端设备地位平等，均可提供服务并调用对端服务。
+
+**典型应用**:
+- 工业现场设备 ↔ 监控中心: 远程数据采集
+- 双向配置同步: 设备互相读取/更新配置
+- 报表系统: 无数据库设备访问有数据库设备的报表API
+
+### 4.2 协议支持
+
+通过 `0x30-0x33` 四个包类型实现:
+- **服务调用**: `SERVICE_CALL` → 本地HTTP调用 → `SERVICE_RESULT`
+- **服务发现**: `SERVICE_QUERY` → 查询注册表 → `SERVICE_LIST`
+
+### 4.3 配置示例
+
+```json
+{
+  "services": {
+    "enabled": true,
+    "localServices": {
+      "daily_brief": {
+        "name": "每日简报",
+        "endpoint": "http://localhost:3000/api/stats/daily/brief",
+        "method": "GET",
+        "timeout": 10000
+      }
+    }
+  }
+}
+```
+
+### 4.4 详细文档
+
+完整的设计方案、实现细节和使用指南请参考:
+- [API转发设计文档](./api_forwarding_design.md)

@@ -27,6 +27,26 @@
     "console": true,
     "file": true
   },
+  "services": {
+    "enabled": true,
+    "autoRegister": true,
+    "localServices": {
+      "system_info": {
+        "name": "System Info",
+        "description": "Get system status",
+        "endpoint": "http://localhost:3000/api/status",
+        "method": "GET",
+        "enabled": true
+      },
+      "daily_brief": {
+        "name": "每日简报",
+        "description": "获取每日统计简报",
+        "endpoint": "http://192.168.9.149:3000/api/stats/daily/brief",
+        "method": "GET",
+        "enabled": true
+      }
+    }
+  },
   "server": {
     "port": 3000
   },

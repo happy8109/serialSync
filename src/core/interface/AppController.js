@@ -10,6 +10,7 @@ const ServiceManager = require('../services/ServiceManager');
 const MessageService = require('../services/MessageService');
 const SystemService = require('../services/SystemService');
 const FileTransferService = require('../services/FileTransferService');
+const HttpProxyService = require('../services/HttpProxyService');
 const { logger } = require('../../utils/logger');
 const appLogger = logger.create('App');
 
@@ -26,17 +27,23 @@ class AppController extends EventEmitter {
         this.messageService = new MessageService();
         this.systemService = new SystemService();
         this.fileTransferService = new FileTransferService();
+        this.httpProxyService = new HttpProxyService();
 
         // 注册服务
         this.serviceManager.register(this.messageService);
         this.serviceManager.register(this.systemService);
         this.serviceManager.register(this.fileTransferService);
+        this.serviceManager.register(this.httpProxyService);
 
         // 绑定事件
         this._setupListeners();
     }
 
     _setupListeners() {
+        // 初始化服务配置
+        const config = require('config');
+        this.httpProxyService.loadServicesFromConfig(config);
+
         // 监听 Bridge 状态
         this.bridge.on('open', () => this.emit('status', this.getStatus()));
         this.bridge.on('close', () => this.emit('status', this.getStatus()));
@@ -190,6 +197,28 @@ class AppController extends EventEmitter {
             bridgeStats: this.bridge.stats,
             queueStats: this.scheduler.getStatus()
         };
+    }
+
+    // ================= API Proxy Methods =================
+
+    async pullService(serviceId, params) {
+        return await this.httpProxyService.pullService(serviceId, params);
+    }
+
+    async queryRemoteServices(filter) {
+        return await this.httpProxyService.queryRemoteServices(filter);
+    }
+
+    registerService(serviceId, config) {
+        this.httpProxyService.registerService(serviceId, config);
+    }
+
+    getLocalServices() {
+        return this.httpProxyService.getLocalServicesMeta();
+    }
+
+    getRemoteServices() {
+        return this.httpProxyService.getRemoteServices();
     }
 }
 

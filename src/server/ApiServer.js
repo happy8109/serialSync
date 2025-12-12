@@ -151,6 +151,59 @@ class ApiServer {
             res.json({ success: true });
         });
 
+        // ================= API Forwarding Routes =================
+
+        // 10. 获取本地服务列表
+        router.get('/services/local', (req, res) => {
+            res.json({ success: true, data: this.controller.getLocalServices() });
+        });
+
+        // 11. 注册本地服务
+        router.post('/services/local', (req, res) => {
+            const { id, ...config } = req.body;
+            if (!id) return res.status(400).json({ error: 'Service ID is required' });
+            this.controller.registerService(id, config);
+            res.json({ success: true });
+        });
+
+        // 12. 查询对端服务 (触发串口查询)
+        router.post('/services/remote/query', async (req, res) => {
+            try {
+                const filter = req.body;
+                await this.controller.queryRemoteServices(filter);
+                // 等待短暂时间让 LIST 包回来，或者直接返回成功让前端轮询/监听WebSocket
+                // 这里为了简单，返回触发成功，由前端通过 WebSocket 监听更新或轮询 GET /remote
+                res.json({ success: true, message: 'Query sent' });
+            } catch (err) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        // 13. 获取缓存的对端服务列表
+        router.get('/services/remote', (req, res) => {
+            res.json({ success: true, data: this.controller.getRemoteServices() });
+        });
+
+        // 14. 调用远程服务
+        router.post('/services/remote/:serviceId/call', async (req, res) => {
+            try {
+                const { serviceId } = req.params;
+                const params = req.body;
+
+                const result = await this.controller.pullService(serviceId, params);
+
+                // 尝试解析JSON响应
+                try {
+                    const jsonResult = JSON.parse(result);
+                    res.json({ success: true, data: jsonResult });
+                } catch (e) {
+                    res.json({ success: true, data: result });
+                }
+            } catch (err) {
+                res.status(500).json({ success: false, error: err.message });
+            }
+        });
+
         this.app.use('/api', router);
     }
 

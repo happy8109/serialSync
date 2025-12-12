@@ -45,7 +45,49 @@ SerialSync 旨在提供一个高效、可靠的串口文件传输与通信工具
     - [ ] 前端设置页面 (修改分片大小, 窗口大小, 超时设置)
     - [ ] 配置持久化 (保存到后端 config)
 
-### Phase 3: 测试与发布
+### Phase 3: API 转发 (HTTP 透明代理) - v2.3 新增
+
+详细设计文档: [api_forwarding_design.md](./api_forwarding_design.md)
+
+- [ ] **核心模块开发**
+    - [ ] `src/core/services/HttpProxyService.js`
+        - [ ] 服务注册表管理 (registerService, loadServicesFromConfig)
+        - [ ] HTTP调用封装 (callLocalHttp)
+        - [ ] 请求/响应关联机制 (pendingRequests Map)
+        - [ ] 服务发现协议 (handleServiceQuery, queryRemoteServices)
+    - [ ] 更新 `src/core/interface/AppController.js`
+        - [ ] 集成 HttpProxyService
+        - [ ] 暴露API: pullService, queryRemoteServices, registerService
+    - [ ] 更新 `src/server/ApiServer.js`
+        - [ ] 新增路由: `/api/services/*` (local/remote/query/call)
+
+- [ ] **协议支持**
+    - [ ] 定义包类型常量 (0x30-0x33)
+    - [ ] 实现包体编解码 (JSON格式)
+    - [ ] 集成到 PacketScheduler (P1优先级)
+
+- [ ] **配置文件**
+    - [ ] 更新 `config/default.json` 添加 `services` 配置块
+    - [ ] 编写配置文件说明文档
+    - [ ] 提供配置模板示例
+
+- [ ] **Web UI 开发**
+    - [ ] `src/web/src/features/api-forwarder/ServiceManager.jsx`
+        - [ ] 本地服务列表展示
+        - [ ] 对端服务查询与列表展示
+        - [ ] 刷新对端服务功能
+    - [ ] 改造 `src/web/src/features/api-forwarder/ApiDebugger.jsx`
+        - [ ] 从Mock实现改为真实API调用
+        - [ ] 支持从ServiceManager传入serviceId
+        - [ ] 显示真实的RTT和HTTP响应
+
+- [ ] **测试**
+    - [ ] 单元测试: HttpProxyService
+    - [ ] 集成测试: 双端通信测试 (COM1 ↔ COM2)
+    - [ ] 性能测试: 延迟与带宽测试
+
+### Phase 4: 测试与发布
+
 
 - [ ] **自动化测试**
     - [ ] 完善 API Server 的单元测试

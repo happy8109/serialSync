@@ -6,7 +6,7 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.1 (Core Refactoring Complete)
+**当前版本**: v2.3 (API Forwarding Development)
 
 ### 已完成功能 (Phase 1-3)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
@@ -14,10 +14,13 @@
 - [x] **CLI 工具**: 基于 `inquirer` 的交互式命令行工具。
 - [x] **性能优化**: 大文件传输吞吐量提升 5-10 倍。
 - [x] **断点续传**: 基于文件 Hash 的断点恢复 (v2.2)。
-
-### 未来规划 (Phase 4 - API & UI)
 - [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。
-- [ ] **Web UI**: 基于 React/Vue 的可视化控制台。
+- [x] **Web UI**: 基于 React + Vite + TailwindCSS 的可视化控制台。
+
+### 当前开发 (Phase 4 - API Forwarding)
+- [ ] **API 转发 (HTTP 透明代理)**: 通过串口访问对端主机上的本地HTTP服务。
+  - 支持服务发现、双向调用、配置驱动
+  - 详细设计: [API Forwarding Design](./api_forwarding_design.md)
 
 详细开发计划请参考: [Implementation Plan](./implementation_plan.md)
 
@@ -222,4 +225,77 @@ Kylin V10 自带浏览器通常基于 Chromium 内核。
 *   **x86_64 (兆芯/海光/Intel/AMD)**: 使用标准 Node.js 安装包。
 *   **ARM64 (飞腾/鲲鹏)**: 需下载 Node.js ARM64 版本 (`node-vxx-linux-arm64.tar.xz`)。
 
+---
 
+## 9. API 转发使用指南 (v2.3)
+
+### 9.1 功能概述
+
+API转发功能允许串口两端设备通过串口访问对端主机上的本地HTTP服务，实现HTTP透明代理。
+
+**典型应用场景**:
+- 工业现场设备 ↔ 监控中心: 远程数据采集
+- 双向配置同步: 设备互相读取/更新配置
+- 报表系统: 无数据库设备访问有数据库设备的报表API
+
+### 9.2 配置本地服务
+
+编辑 `config/default.json`:
+
+```json
+{
+  "services": {
+    "enabled": true,
+    "autoRegister": true,
+    "localServices": {
+      "daily_brief": {
+        "name": "每日简报",
+        "description": "生成指定日期的每日简报",
+        "endpoint": "http://localhost:3000/api/stats/daily/brief",
+        "method": "GET",
+        "timeout": 10000,
+        "enabled": true
+      },
+      "system_info": {
+        "name": "系统信息",
+        "endpoint": "http://localhost:8080/api/system/info",
+        "method": "GET",
+        "enabled": true
+      }
+    }
+  }
+}
+```
+
+### 9.3 使用方式
+
+#### 方式A: Web UI
+
+1. 打开 Web UI: `http://localhost:3000`
+2. 进入"API转发"页面
+3. 点击"刷新"查询对端服务列表
+4. 选择服务并输入参数
+5. 点击"调用"获取结果
+
+#### 方式B: REST API
+
+```bash
+# 1. 查询对端服务列表
+curl -X POST http://localhost:3000/api/services/remote/query \
+  -H 'Content-Type: application/json' \
+  -d '{ "enabled": true }'
+
+# 2. 调用对端服务
+curl -X POST http://localhost:3000/api/services/remote/daily_brief/call \
+  -H 'Content-Type: application/json' \
+  -d '{ "date": "2025-12-10", "verbose": true }'
+
+# 3. 查看本地服务列表
+curl http://localhost:3000/api/services/local/public
+```
+
+### 9.4 详细文档
+
+完整的设计方案、协议定义和实现细节请参考:
+- [API转发设计文档](./api_forwarding_design.md)
+- [技术参考手册 - API转发章节](./technical_reference.md#4-api-转发-http-透明代理---v23)
