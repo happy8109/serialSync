@@ -166,6 +166,17 @@ class ApiServer {
             res.json({ success: true });
         });
 
+        // 11.5 删除本地服务
+        router.delete('/services/local/:serviceId', (req, res) => {
+            const { serviceId } = req.params;
+            try {
+                this.controller.unregisterService(serviceId);
+                res.json({ success: true });
+            } catch (err) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
         // 12. 查询对端服务 (触发串口查询)
         router.post('/services/remote/query', async (req, res) => {
             try {
@@ -184,7 +195,7 @@ class ApiServer {
             res.json({ success: true, data: this.controller.getRemoteServices() });
         });
 
-        // 14. 调用远程服务
+        // 14. 调用远程服务 (RPC 风格, Legacy)
         router.post('/services/remote/:serviceId/call', async (req, res) => {
             try {
                 const { serviceId } = req.params;
@@ -201,6 +212,39 @@ class ApiServer {
                 }
             } catch (err) {
                 res.status(500).json({ success: false, error: err.message });
+            }
+        });
+
+        // 15. 网关模式 (Gateway Mode) - 透明转发
+        // 支持 GET/POST 等所有方法，路径如: /api/proxy/daily_brief?date=2024
+        router.all('/proxy/:serviceId', async (req, res) => {
+            const { serviceId } = req.params;
+
+            // 智能提取参数
+            let params = {};
+            if (Object.keys(req.query).length > 0) {
+                params = { ...req.query };
+            }
+            if (req.body && Object.keys(req.body).length > 0) {
+                params = { ...params, ...req.body };
+            }
+
+            try {
+                // 发起远程调用
+                const result = await this.controller.pullService(serviceId, params);
+
+                // 透明返回结果
+                // 1. 如果结果是 JSON 字符串，尝试解析并以 JSON 格式返回
+                try {
+                    const json = JSON.parse(result);
+                    res.json(json);
+                } catch (e) {
+                    // 2. 否则直接返回原始内容 (可能是纯文本或HTML)
+                    res.send(result);
+                }
+            } catch (err) {
+                // 网关错误
+                res.status(502).send({ error: err.message });
             }
         });
 

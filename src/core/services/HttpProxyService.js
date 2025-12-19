@@ -26,14 +26,14 @@ class HttpProxyService extends EventEmitter {
         super();
         this.serviceId = 'http-proxy';
         this.logger = logger.create('HttpProxy');
-        
+
         // Service Registry
         this.localServices = new Map();
         this.remoteServices = new Map();
-        
+
         // Pending Requests
         this.pendingRequests = new Map();
-        
+
         // Scheduler
         this.scheduler = null;
 
@@ -85,7 +85,7 @@ class HttpProxyService extends EventEmitter {
      */
     loadServicesFromConfig(cfg) {
         const services = cfg.has('services.localServices') ? cfg.get('services.localServices') : {};
-        
+
         for (const [id, svcConfig] of Object.entries(services)) {
             if (svcConfig.enabled !== false) {
                 this.registerService(id, svcConfig, false); // false = no persist during load
@@ -154,6 +154,34 @@ class HttpProxyService extends EventEmitter {
         }
     }
 
+    /**
+     * Unregister a local service
+     * @param {string} id 
+     * @param {boolean} persist
+     */
+    unregisterService(id, persist = true) {
+        if (this.localServices.has(id)) {
+            this.localServices.delete(id);
+
+            if (persist) {
+                try {
+                    let currentConfig = {};
+                    if (fs.existsSync(this.configPath)) {
+                        currentConfig = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
+                    }
+
+                    if (currentConfig.services && currentConfig.services.localServices) {
+                        delete currentConfig.services.localServices[id];
+                        fs.writeFileSync(this.configPath, JSON.stringify(currentConfig, null, 2), 'utf8');
+                        this.logger.info(`Service ${id} data removed from config`);
+                    }
+                } catch (e) {
+                    this.logger.error('Failed to update config for removal:', e);
+                }
+            }
+        }
+    }
+
     // =========================================================================
     // Client Side: Invoke Remote Service
     // =========================================================================
@@ -170,7 +198,7 @@ class HttpProxyService extends EventEmitter {
         };
 
         const payload = Buffer.from(JSON.stringify(request));
-        
+
         // P1 Priority
         this.scheduler.enqueue(PT.CALL, 0, payload, 1);
         this.logger.info(`[PULL] Requesting ${serviceId} (${requestId})`);
@@ -243,7 +271,7 @@ class HttpProxyService extends EventEmitter {
         if (!pending) return;
 
         pending.chunks[seq] = data;
-        
+
         // Check if complete
         let receivedCount = 0;
         let totalSize = 0;
@@ -258,7 +286,7 @@ class HttpProxyService extends EventEmitter {
             this.logger.info(`[CHUNK] Reassembled ${id}, size: ${totalSize}`);
             clearTimeout(pending.timer);
             this.pendingRequests.delete(id);
-            
+
             // Reassemble
             const fullData = pending.chunks.join('');
             pending.resolve(fullData);
@@ -308,7 +336,7 @@ class HttpProxyService extends EventEmitter {
         const url = require('url');
         const parsedUrl = url.parse(endpoint);
         const method = options.method || 'GET';
-        
+
         return new Promise((resolve, reject) => {
             let path = parsedUrl.path;
             let postData = null;
@@ -342,7 +370,7 @@ class HttpProxyService extends EventEmitter {
 
             req.on('error', reject);
             req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
-            
+
             if (postData) req.write(postData);
             req.end();
         });
@@ -351,7 +379,7 @@ class HttpProxyService extends EventEmitter {
     _sendResult(requestId, status, data, error) {
         // threshold 4KB
         const CHUNK_SIZE = 4096;
-        
+
         if (error || !data || data.length <= CHUNK_SIZE) {
             // Send single packet
             const payload = JSON.stringify({ id: requestId, status, data, error });
@@ -359,12 +387,12 @@ class HttpProxyService extends EventEmitter {
         } else {
             // Segmented
             const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
-            
+
             // 1. Header
             const header = JSON.stringify({
-                id: requestId, 
-                status, 
-                chunked: true, 
+                id: requestId,
+                status,
+                chunked: true,
                 total: totalChunks
             });
             this.scheduler.enqueue(PT.RESULT, 0, Buffer.from(header), 1);
@@ -390,27 +418,27 @@ class HttpProxyService extends EventEmitter {
     async queryRemoteServices(filter = {}) {
         const id = this._generateRequestId();
         const payload = JSON.stringify({ id, filter });
-        
+
         this.scheduler.enqueue(PT.QUERY, 0, Buffer.from(payload), 1);
-        
+
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
                 this.pendingRequests.delete(id);
                 reject(new Error('Query timeout'));
             }, 10000); // 10s timeout for query
-            
+
             this.pendingRequests.set(id, { resolve, reject, timer });
         });
     }
 
     handleServiceQuery(frame) {
         let query;
-        try { query = JSON.parse(frame.body.toString()); } catch(e) { return; }
-        
+        try { query = JSON.parse(frame.body.toString()); } catch (e) { return; }
+
         const { id, filter } = query;
         let services = Array.from(this.localServices.values()).map(s => ({
-            id: s.id, 
-            name: s.name, 
+            id: s.id,
+            name: s.name,
             description: s.description,
             version: s.version,
             method: s.method,
@@ -428,11 +456,11 @@ class HttpProxyService extends EventEmitter {
 
     handleServiceList(frame) {
         let resp;
-        try { resp = JSON.parse(frame.body.toString()); } catch(e) { return; }
-        
+        try { resp = JSON.parse(frame.body.toString()); } catch (e) { return; }
+
         const { id, services } = resp;
         const pending = this.pendingRequests.get(id);
-        
+
         // Cache them
         this.remoteServices.clear();
         services.forEach(s => this.remoteServices.set(s.id, s));
@@ -447,7 +475,7 @@ class HttpProxyService extends EventEmitter {
     // =========================================================================
     // Util
     // =========================================================================
-    
+
     _generateRequestId() {
         return `req_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
     }
@@ -455,8 +483,10 @@ class HttpProxyService extends EventEmitter {
     getLocalServicesMeta() {
         return Array.from(this.localServices.values()).map(s => ({
             id: s.id,
-            name: s.name, 
-            description: s.description, 
+            name: s.name,
+            description: s.description,
+            endpoint: s.endpoint,
+            method: s.method,
             enabled: s.enabled
         }));
     }

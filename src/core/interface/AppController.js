@@ -213,6 +213,10 @@ class AppController extends EventEmitter {
         this.httpProxyService.registerService(serviceId, config);
     }
 
+    unregisterService(serviceId) {
+        this.httpProxyService.unregisterService(serviceId);
+    }
+
     getLocalServices() {
         return this.httpProxyService.getLocalServicesMeta();
     }
