@@ -88,7 +88,7 @@ class ApiServer {
         router.post('/config', (req, res) => {
             const config = req.body;
             try {
-                this.controller.setFileTransferConfig(config);
+                this.controller.setSystemConfig(config);
                 res.json({ success: true, config });
             } catch (err) {
                 res.status(500).json({ error: err.message });
@@ -302,6 +302,11 @@ class ApiServer {
         this.controller.on('error', (err) => {
             this.logger.error(`Controller Error: ${err.message}`);
             this._broadcast('error', { message: err.message });
+        });
+
+        this.controller.on('system_message', (msg) => {
+            // Broadcast as specific type
+            this._broadcast('system_message', { message: msg });
         });
 
         this.controller.on('cancelled', (data) => {

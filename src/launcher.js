@@ -14,22 +14,27 @@
 const { spawn } = require('child_process');
 const path = require('path');
 
-const config = require('config');
-
-// 解析命令行参数，优先级高于配置文件
-const args = process.argv.slice(2);
+// 读取配置文件 (Bypass node-config cache by reading file directly)
+const args = process.argv.slice(2); // Restore args definition
+let fileConfig = {};
+try {
+    const configPath = path.join(__dirname, '..', 'config', 'default.json');
+    if (require('fs').existsSync(configPath)) {
+        fileConfig = JSON.parse(require('fs').readFileSync(configPath, 'utf8'));
+    }
+} catch (e) {
+    console.error('[Launcher] Failed to read config/default.json', e);
+}
 
 // 1. 串口配置
 // 优先级: CLI 参数 > 配置文件 > 默认值
-const serialPort = args[0] || (config.has('serial.port') ? config.get('serial.port') : 'COM3');
+const serialPort = args[0] || (fileConfig.serial && fileConfig.serial.port) || 'COM3';
 
 // 2. API 服务端口
-// 优先级: CLI 参数 > 配置文件 > 默认值
-const apiPort = args[1] || (config.has('server.port') ? config.get('server.port') : '3000');
+const apiPort = args[1] || (fileConfig.server && fileConfig.server.port) || '3000';
 
 // 3. Web UI 端口
-// 优先级: CLI 参数 > 配置文件 > 默认值
-const webPort = args[2] || (config.has('web.port') ? config.get('web.port') : '5173');
+const webPort = args[2] || (fileConfig.web && fileConfig.web.port) || '5173';
 
 const projectRoot = path.resolve(__dirname, '..');
 const serverScript = path.join(projectRoot, 'src', 'server', 'index.js');

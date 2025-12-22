@@ -42,12 +42,20 @@ class AppController extends EventEmitter {
     _setupListeners() {
         // 初始化服务配置
         const config = require('config');
+        // Cache runtime config for status reporting
+        this.runtimeConfig = JSON.parse(JSON.stringify(config));
+
         this.httpProxyService.loadServicesFromConfig(config);
+
+        if (config.has('transfer')) {
+            this.fileTransferService.setConfig(config.get('transfer'));
+        }
 
         // 监听 Bridge 状态
         this.bridge.on('open', () => this.emit('status', this.getStatus()));
         this.bridge.on('close', () => this.emit('status', this.getStatus()));
         this.bridge.on('error', (err) => this.emit('error', err));
+        this.bridge.on('status-message', (msg) => this.emit('system_message', `[串口] ${msg}`));
 
         // 监听收到数据帧 -> 分发给服务
         this.bridge.on('frame', (frame) => {
@@ -87,9 +95,9 @@ class AppController extends EventEmitter {
     /**
      * 连接串口
      */
-    async connect(port, baudRate = 115200) {
+    async connect(port, options = {}) {
         try {
-            await this.bridge.connect(port, { baudRate });
+            await this.bridge.connect(port, options);
             return true;
         } catch (err) {
             throw err;
@@ -111,10 +119,87 @@ class AppController extends EventEmitter {
     }
 
     /**
-     * 设置文件传输参数
+     * 保存并应用系统配置
      */
-    setFileTransferConfig(config) {
-        this.fileTransferService.setConfig(config);
+    setSystemConfig(config) {
+        // 1. 应用运行时传输配置
+        if (config.transfer) {
+            this.fileTransferService.setConfig(config.transfer);
+        }
+
+        // 2. 运行时热更新: 串口配置 (重连策略等)
+        if (config.serial) {
+            this.bridge.setConfig(config.serial);
+        }
+
+        // 3. 运行时热更新: 系统选项
+        if (config.system) {
+            // Service Discovery
+            if (config.system.serviceDiscovery !== undefined) {
+                this.httpProxyService.setAutoDiscovery(config.system.serviceDiscovery);
+            }
+            // Log Level
+            if (config.system.logLevel !== undefined) {
+                try {
+                    const { logger } = require('../../utils/logger');
+                    logger.level = config.system.logLevel;
+                    // Also update underlying transports
+                    logger.transports.forEach(t => t.level = config.system.logLevel);
+                    appLogger.info(`Log level changed to ${config.system.logLevel}`);
+                } catch (e) {
+                    // ignore
+                }
+            }
+        }
+
+        // 4. 持久化到 config/default.json
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const configPath = path.join(process.cwd(), 'config', 'default.json');
+            // ... (keep reading and saving logic)
+            // 读取现有配置，保留未修改的项
+            let currentConfig = {};
+            if (fs.existsSync(configPath)) {
+                currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            }
+
+            // 合并更新
+            if (config.serial) {
+                currentConfig.serial = { ...currentConfig.serial, ...config.serial };
+            }
+            if (config.transfer) {
+                currentConfig.transfer = { ...currentConfig.transfer, ...config.transfer };
+            }
+            if (config.system) {
+                // Map UI system config to actual file config structure
+                if (config.system.serviceDiscovery !== undefined) {
+                    if (!currentConfig.services) currentConfig.services = {};
+                    currentConfig.services.autoRegister = config.system.serviceDiscovery;
+                }
+                if (config.system.logLevel !== undefined) {
+                    if (!currentConfig.logging) currentConfig.logging = {};
+                    currentConfig.logging.level = config.system.logLevel;
+                }
+
+                // Save Heartbeat to file (under system or serial? let's save to serial as per file buffer inspection earlier)
+                // Actually inspection showed 'serial.heartbeatInterval'. 
+                // Let's ensure we save heartbeat params deeply to serial section if they are passed in system config from UI
+                if (config.system.heartbeatInterval !== undefined || config.system.heartbeatTimeout !== undefined) {
+                    if (!currentConfig.serial) currentConfig.serial = {};
+                    if (config.system.heartbeatInterval !== undefined) currentConfig.serial.heartbeatInterval = config.system.heartbeatInterval;
+                    if (config.system.heartbeatTimeout !== undefined) currentConfig.serial.heartbeatTimeout = config.system.heartbeatTimeout;
+                }
+            }
+
+            // 写入文件
+            fs.writeFileSync(configPath, JSON.stringify(currentConfig, null, 2));
+            appLogger.info('System config saved to default.json');
+            return true;
+        } catch (err) {
+            appLogger.error('Failed to save config:', err);
+            throw err;
+        }
     }
 
     /**
@@ -190,10 +275,33 @@ class AppController extends EventEmitter {
     }
 
     getStatus() {
+        // 直接从磁盘读取最新配置，确保 UI 显示的任何时候都是文件里的真实值
+        // 这是最稳健的方式，绕过所有内存缓存
+        let fileConfig = {};
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const configPath = path.join(process.cwd(), 'config', 'default.json');
+            if (fs.existsSync(configPath)) {
+                fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            }
+        } catch (e) {
+            appLogger.error('Failed to read config file for status', e);
+        }
+
         return {
+            // Runtime Status
             connected: this.bridge.isConnected,
-            port: this.bridge.port ? this.bridge.port.path : null,
-            baudRate: this.bridge.baudRate,
+            congested: this.bridge.isCongested,
+            activePort: this.bridge.port ? this.bridge.port.path : null,
+            port: this.bridge.port ? this.bridge.port.path : null, // Restore for frontend compatibility
+            activeBaudRate: this.bridge.baudRate,
+
+            // Full Configuration (Source of Truth for settings UI)
+            // 直接下发文件内容
+            config: fileConfig,
+
+            // Legacy / Component specific status (kept for runtime stats visibility)
             bridgeStats: this.bridge.stats,
             queueStats: this.scheduler.getStatus()
         };

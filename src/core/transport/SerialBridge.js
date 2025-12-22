@@ -67,6 +67,10 @@ class SerialBridge extends EventEmitter {
         const finalConfig = { ...serialConfig, ...optionsOverride };
 
         return new Promise((resolve, reject) => {
+            // Set intent config immediately so getStatus returns correct info during connection attempts
+            this.baudRate = finalConfig.baudRate;
+            this.currentConfig = finalConfig;
+
             this.port = new this.SerialPortClass({
                 path,
                 baudRate: finalConfig.baudRate,
@@ -84,8 +88,7 @@ class SerialBridge extends EventEmitter {
                 }
 
                 this.isConnected = true;
-                this.baudRate = finalConfig.baudRate; // Store baudRate
-                this.reconnectAttempts = 0; // 重置重连次数
+                this.reconnectAttempts = 0;
                 this._setupListeners();
                 this.emit('open');
                 resolve();
@@ -115,10 +118,78 @@ class SerialBridge extends EventEmitter {
         this._tryReconnect();
     }
 
+    async setConfig(newConfig) {
+        if (!this.currentConfig) this.currentConfig = {};
+
+        // 兼容性修正：UI/Config 使用 'port'，但 SerialPort 使用 'path'
+        if (newConfig.port && !newConfig.path) {
+            newConfig.path = newConfig.port;
+        }
+
+        const oldConfig = { ...this.currentConfig };
+        Object.assign(this.currentConfig, newConfig);
+
+        // 检测物理参数是否变化
+        const needsRestart = this.isConnected && (
+            oldConfig.path !== this.currentConfig.path ||
+            oldConfig.baudRate !== this.currentConfig.baudRate ||
+            oldConfig.dataBits !== this.currentConfig.dataBits ||
+            oldConfig.stopBits !== this.currentConfig.stopBits ||
+            oldConfig.parity !== this.currentConfig.parity
+        );
+
+        if (needsRestart) {
+            bridgeLogger.info('[串口] 检测到物理参数变更，正在重启连接...');
+            this.emit('status-message', '检测到物理参数变更，正在重启连接...');
+            try {
+                // 1. 临时保存自动重连意图 (disconnect会将其设为false)
+                const wasAutoReconnect = this.currentConfig.autoReconnect;
+
+                // 2. 强制关闭当前连接
+                // 我们不调用 disconnect() 因为它带有业务含义(用户停止)，我们直接操作底层
+                // 或者调用 disconnect() 然后手动恢复标志
+                await this.disconnect();
+
+                // 3. 恢复重连标志 (disconnect副作用修正)
+                this.shouldAutoReconnect = wasAutoReconnect;
+
+                // 4. 使用新配置立即连接
+                // 给一点点缓冲时间，让端口释放
+                setTimeout(() => {
+                    const targetPath = this.currentConfig.path || this.currentConfig.port;
+                    this.connect(targetPath, this.currentConfig)
+                        .catch(err => {
+                            bridgeLogger.error(`[串口] 热更新重连失败: ${err.message}`);
+                            // 触发重连循环
+                            this._handleConnectionError(err);
+                        });
+                }, 500);
+
+            } catch (err) {
+                bridgeLogger.error('[串口] 热更新过程出错', err);
+            }
+        } else {
+            // 参数无实质变化，或者当前未连接
+            bridgeLogger.info('[串口] 配置已更新（无需重启）');
+            this.emit('status-message', '配置已更新（无需重启）');
+
+            // 强联动逻辑：
+            // 如果当前是断开状态，但新配置要求"自动重连"，则立即尝试连接。
+            // 这覆盖了之前可能的手动 disconnect 状态。
+            if (!this.isConnected && this.currentConfig.autoReconnect && this.currentConfig.path) {
+                bridgeLogger.info('[串口] 配置保存触发自动连接...');
+                this.emit('status-message', '配置保存触发自动连接...');
+                this.shouldAutoReconnect = true;
+                this._tryReconnect();
+            }
+        }
+    }
+
     _tryReconnect() {
         if (!this.shouldAutoReconnect) return;
 
-        const serialConfig = config.get('serial');
+        // Use runtime config priority
+        const serialConfig = this.currentConfig || config.get('serial');
         if (!serialConfig.autoReconnect) return;
 
         if (serialConfig.maxReconnectAttempts > 0 && this.reconnectAttempts >= serialConfig.maxReconnectAttempts) {
@@ -181,6 +252,13 @@ class SerialBridge extends EventEmitter {
 
         // 错误处理
         this.port.on('error', (err) => {
+            // Ignore common Windows errors during disconnect/close
+            if (err.message && (err.message.includes('Operation aborted') || err.message.includes('Access is denied'))) {
+                // bridgeLogger might not be available here as 'this'. Just use logging if possible or silent.
+                // bridgeLogger is imported in file scope.
+                bridgeLogger.debug(`Ignored serial error (expected during reset): ${err.message}`);
+                return;
+            }
             this.emit('error', err);
         });
 

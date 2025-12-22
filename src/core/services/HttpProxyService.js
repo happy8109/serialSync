@@ -39,10 +39,39 @@ class HttpProxyService extends EventEmitter {
 
         // Config Path for persistence
         this.configPath = path.join(process.cwd(), 'config', 'default.json');
+
+        // Auto Discovery
+        this.discoveryTimer = null;
+        const autoRegister = config.has('services.autoRegister') ? config.get('services.autoRegister') : false;
+        if (autoRegister) {
+            this.setAutoDiscovery(true);
+        }
     }
 
     setScheduler(scheduler) {
         this.scheduler = scheduler;
+    }
+
+    setAutoDiscovery(enabled) {
+        if (this.discoveryTimer) {
+            clearInterval(this.discoveryTimer);
+            this.discoveryTimer = null;
+        }
+
+        if (enabled) {
+            this.logger.info('Auto-discovery enabled: broadcasting every 60s');
+            // Initial broadcast
+            setTimeout(() => this.queryRemoteServices().catch(() => { }), 1000);
+
+            // Periodical broadcast
+            this.discoveryTimer = setInterval(() => {
+                this.queryRemoteServices().catch(err => {
+                    // Ignore timeouts in auto-discovery as it's fire-and-forget for discovery
+                });
+            }, 60000); // 60s interval
+        } else {
+            this.logger.info('Auto-discovery disabled');
+        }
     }
 
     getInterestedTypes() {
@@ -419,16 +448,21 @@ class HttpProxyService extends EventEmitter {
         const id = this._generateRequestId();
         const payload = JSON.stringify({ id, filter });
 
-        this.scheduler.enqueue(PT.QUERY, 0, Buffer.from(payload), 1);
+        try {
+            this.scheduler.enqueue(PT.QUERY, 0, Buffer.from(payload), 1);
 
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pendingRequests.delete(id);
-                reject(new Error('Query timeout'));
-            }, 10000); // 10s timeout for query
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    this.pendingRequests.delete(id);
+                    reject(new Error('Query timeout'));
+                }, 10000); // 10s timeout for query
 
-            this.pendingRequests.set(id, { resolve, reject, timer });
-        });
+                this.pendingRequests.set(id, { resolve, reject, timer });
+            });
+        } catch (err) {
+            this.logger.warn('Failed to send service query (Serial not connected?)');
+            return Promise.resolve([]); // Return empty list gracefully
+        }
     }
 
     handleServiceQuery(frame) {

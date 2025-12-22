@@ -103,6 +103,12 @@ CLI 启动后进入交互式 REPL 模式。
 
 ## 5. 最近变更 (Changelog Summary)
 
+**2025-12-22 (v2.4) - Configuration Management**
+*   **System Settings**: 全面实现配置管理，UI 与 `config/default.json` 双向同步。
+*   **Hot Reload**: 串口参数变更支持热重载（自动重启连接），日志级别和自动发现开关即时生效。
+*   **Stability**: 修复 Launcher 启动参数解析问题，优化 Windows 下的串口错误屏蔽。
+*   **UX**: 实时任务流增加系统级消息通知。
+
 **2025-12-10 (v2.3.2) - Multi-file Selection & Status Fixes**
 *   **File Transfer**: 支持多文件选择与批量拖拽上传功能。
 *   **Status Indicator**: 修复断开连接后指示灯状态不更新的问题。
@@ -144,7 +150,7 @@ CLI 启动后进入交互式 REPL 模式。
 | `GET` | `/api/ports` | 列出可用串口 | - |
 | `POST` | `/api/connect` | 连接串口 | `{ "path": "COM1", "baudRate": 115200 }` |
 | `POST` | `/api/disconnect` | 断开连接 | - |
-| `POST` | `/api/config` | 修改系统配置 | `{ "chunkSize": 4096, "windowSize": 100 }` |
+| `POST` | `/api/config` | 修改系统配置 | `{ "serial": {...}, "transfer": {...}, "system": {...} }` |
 | `POST` | `/api/send/chat` | 发送消息 | `{ "text": "Hello" }` |
 | `POST` | `/api/send/file` | 发送文件 | `{ "path": "C:/data.bin" }` (或 multipart 上传) |
 | `POST` | `/api/transfer/:fileId/pause` | 暂停传输 | - |

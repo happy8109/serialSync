@@ -30,11 +30,13 @@ class FileTransferService extends EventEmitter {
         // 发送会话: { fileId: { filePath, fileSize, totalChunks, windowStart, inflight, status, fd } }
         this.sendSessions = new Map();
 
-        // 接收会话: { fileId: { fileName, fileSize, totalChunks, receivedBitmap, savePath, fd, lastAckTime } }
+        // 接收会话: { fileName, fileSize, totalChunks, receivedBitmap, savePath, fd, lastAckTime } }
         this.recvSessions = new Map();
 
         this.chunkSize = 1024; // 1KB
-        this.windowSize = 50;  // 窗口大小 - 增大以提高吞吐量
+        this.windowSize = 50;  // 窗口大小
+        this.savePath = path.join(process.cwd(), 'received'); // Default
+        this.conflictStrategy = 'rename'; // 'rename' | 'overwrite' | 'skip'
     }
 
     setScheduler(scheduler) {
@@ -43,7 +45,7 @@ class FileTransferService extends EventEmitter {
 
     /**
      * 动态更新配置
-     * @param {Object} config { chunkSize, windowSize }
+     * @param {Object} config { chunkSize, windowSize, savePath, conflictStrategy }
      */
     setConfig(config) {
         if (config.chunkSize) {
@@ -53,6 +55,17 @@ class FileTransferService extends EventEmitter {
         if (config.windowSize) {
             this.windowSize = config.windowSize;
             bridgeLogger.info(`Config updated: windowSize = ${this.windowSize}`);
+        }
+        if (config.savePath) {
+            // resolve relative paths
+            this.savePath = path.isAbsolute(config.savePath)
+                ? config.savePath
+                : path.join(process.cwd(), config.savePath);
+            bridgeLogger.info(`Config updated: savePath = ${this.savePath}`);
+        }
+        if (config.conflictStrategy) {
+            this.conflictStrategy = config.conflictStrategy;
+            bridgeLogger.info(`Config updated: conflictStrategy = ${this.conflictStrategy}`);
         }
     }
 
@@ -190,11 +203,43 @@ class FileTransferService extends EventEmitter {
         const offer = JSON.parse(frame.body.toString());
         bridgeLogger.info(`Receiving file: ${offer.name} (${(offer.size / 1024).toFixed(1)} KB)`);
 
-        const saveDir = path.join(process.cwd(), 'received');
-        if (!fs.existsSync(saveDir)) fs.mkdirSync(saveDir);
+        const saveDir = this.savePath;
+        if (!fs.existsSync(saveDir)) {
+            try {
+                fs.mkdirSync(saveDir, { recursive: true });
+            } catch (err) {
+                bridgeLogger.error(`Failed to create save directory: ${saveDir}`, err);
+                return;
+            }
+        }
 
-        const savePath = path.join(saveDir, offer.name + '.part');
-        const metaPath = path.join(saveDir, offer.name + '.meta');
+        const savePath = path.join(saveDir, offer.name);
+
+        // Resolve conflict
+        let finalPath = savePath;
+        if (fs.existsSync(savePath)) {
+            if (this.conflictStrategy === 'overwrite') {
+                // Do nothing, will overwrite
+                bridgeLogger.info(`File exists, overwriting: ${offer.name}`);
+            } else if (this.conflictStrategy === 'skip') {
+                bridgeLogger.warn(`File exists, skipping: ${offer.name}`);
+                // TODO: Send skip reject? For now just ignore
+                return;
+            } else {
+                // Rename (default)
+                const ext = path.extname(offer.name);
+                const base = path.basename(offer.name, ext);
+                let counter = 1;
+                while (fs.existsSync(finalPath)) {
+                    finalPath = path.join(saveDir, `${base}_${counter}${ext}`);
+                    counter++;
+                }
+                bridgeLogger.info(`File exists, renaming to: ${path.basename(finalPath)}`);
+            }
+        }
+
+        const partPath = finalPath + '.part';
+        const metaPath = finalPath + '.meta';
 
         // Check for collision with existing sessions
         for (const [id, session] of this.recvSessions.entries()) {

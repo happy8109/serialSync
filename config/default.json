@@ -1,6 +1,6 @@
 {
   "serial": {
-    "port": "COM3",
+    "port": "COM4",
     "baudRate": 115200,
     "dataBits": 8,
     "stopBits": 1,
@@ -8,12 +8,17 @@
     "rtscts": true,
     "autoReconnect": true,
     "reconnectInterval": 3000,
-    "maxReconnectAttempts": 0
+    "maxReconnectAttempts": 0,
+    "heartbeatInterval": 5000,
+    "heartbeatTimeout": 15000,
+    "path": "COM4"
   },
   "transfer": {
     "chunkSize": 1024,
-    "windowSize": 5,
-    "timeout": 5000
+    "windowSize": 50,
+    "timeout": 5000,
+    "savePath": "./received",
+    "conflictStrategy": "rename"
   },
   "message": {
     "maxLength": 4096
