@@ -31,6 +31,14 @@ export default function ServiceManager() {
         fetchLocalServices();
         fetchRemoteServices(); // Load cached
         handleQueryRemote(); // Auto-trigger discovery
+
+        // 自动轮询刷新状态
+        const timer = setInterval(() => {
+            fetchLocalServices();
+            fetchRemoteServices();
+        }, 5000);
+
+        return () => clearInterval(timer);
     }, []);
 
     const fetchLocalServices = async () => {
@@ -229,10 +237,15 @@ export default function ServiceManager() {
                                     <div>
                                         <div className="font-medium flex items-center gap-2">
                                             {service.name || service.id}
-                                            {service.enabled ?
-                                                <span className="w-1.5 h-1.5 rounded-full bg-green-500" title="已启用"></span> :
-                                                <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground" title="已禁用"></span>
-                                            }
+                                            {service.enabled ? (
+                                                service.status === 'offline' ?
+                                                    <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title="服务异常 (Offline)"></span> :
+                                                    service.status === 'online' ?
+                                                        <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" title="服务正常 (Online)"></span> :
+                                                        <span className="w-2 h-2 rounded-full bg-yellow-500" title="检测中..."></span>
+                                            ) : (
+                                                <span className="w-2 h-2 rounded-full bg-muted-foreground/50 border border-muted-foreground" title="已禁用"></span>
+                                            )}
                                         </div>
                                         <div className="text-xs text-muted-foreground mt-0.5 font-mono">{service.id}</div>
                                     </div>
@@ -287,6 +300,15 @@ export default function ServiceManager() {
                                     <div className="flex justify-between items-start">
                                         <div>
                                             <div className="font-medium flex items-center gap-2 text-foreground">
+                                                {service.enabled ? (
+                                                    service.status === 'offline' ?
+                                                        <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title="远程服务异常"></span> :
+                                                        service.status === 'online' ?
+                                                            <span className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" title="远程服务正常"></span> :
+                                                            <span className="w-2 h-2 rounded-full bg-yellow-500" title="状态未知"></span>
+                                                ) : (
+                                                    <span className="w-2 h-2 rounded-full bg-muted-foreground/50 border border-muted-foreground" title="远程服务已禁用"></span>
+                                                )}
                                                 {service.name || service.id}
                                             </div>
                                             <div className="text-xs text-muted-foreground mt-0.5">{service.description || '暂无描述'}</div>

@@ -46,6 +46,9 @@ class HttpProxyService extends EventEmitter {
         if (autoRegister) {
             this.setAutoDiscovery(true);
         }
+
+        // Start Health Check Loop
+        this.healthCheckTimer = setInterval(() => this._checkLocalServices(), 30000); // Check every 30s
     }
 
     setScheduler(scheduler) {
@@ -140,12 +143,17 @@ class HttpProxyService extends EventEmitter {
             timeout: config.timeout || 10000,
             headers: config.headers || {},
             params: config.params || {},
-            enabled: config.enabled !== false
+            enabled: config.enabled !== false,
+            status: 'unknown',
+            lastCheck: 0
         });
 
         if (persist) {
             this._persistConfig();
         }
+
+        // Trigger immediate check
+        this._checkServiceHealth(this.localServices.get(id));
     }
 
     /**
@@ -477,7 +485,8 @@ class HttpProxyService extends EventEmitter {
             version: s.version,
             method: s.method,
             enabled: s.enabled,
-            params: s.params
+            params: s.params,
+            status: s.status
         })); // Exclude endpoint!
 
         if (filter && filter.enabled) {
@@ -521,12 +530,77 @@ class HttpProxyService extends EventEmitter {
             description: s.description,
             endpoint: s.endpoint,
             method: s.method,
-            enabled: s.enabled
+            enabled: s.enabled,
+            status: s.status
         }));
     }
 
     getRemoteServices() {
         return Array.from(this.remoteServices.values());
+    }
+
+    // =========================================================================
+    // Health Check
+    // =========================================================================
+
+    _checkLocalServices() {
+        for (const service of this.localServices.values()) {
+            this._checkServiceHealth(service);
+        }
+    }
+
+    async _checkServiceHealth(service) {
+        if (!service.enabled) {
+            service.status = 'unknown'; // Disabled services are not checked
+            return;
+        }
+
+        try {
+            // Simple probe
+            const url = require('url');
+            const parsedUrl = url.parse(service.endpoint);
+            const httpMod = parsedUrl.protocol === 'https:' ? https : http;
+
+            const req = httpMod.request({
+                hostname: parsedUrl.hostname,
+                port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
+                path: parsedUrl.path,
+                method: service.method, // Try with configured method
+                headers: { ...service.headers },
+                timeout: 5000 // 5s timeout
+            }, res => {
+                // Any response means it's alive (even 4xx/5xx)
+                // We just want to know if the service is reachable
+                res.destroy(); // We don't care about the body
+                service.status = 'online';
+                service.lastCheck = Date.now();
+            });
+
+            req.on('error', (err) => {
+                service.status = 'offline';
+                service.lastCheck = Date.now();
+                // this.logger.debug(`Service ${service.id} check failed: ${err.message}`);
+            });
+
+            req.on('timeout', () => {
+                req.destroy();
+                service.status = 'offline';
+                service.lastCheck = Date.now();
+            });
+
+            // If it's a POST/PUT w/o body, some servers might hang or error, but we just check connectivity
+            // Ideally we should send dummy body if needed, but we don't know the schema.
+            // Sending empty body for POST
+            if (['POST', 'PUT', 'PATCH'].includes(service.method)) {
+                req.write('{}');
+            }
+
+            req.end();
+
+        } catch (err) {
+            service.status = 'offline';
+            service.lastCheck = Date.now();
+        }
     }
 }
 
