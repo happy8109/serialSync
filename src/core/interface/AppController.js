@@ -257,6 +257,12 @@ class AppController extends EventEmitter {
      * 打开文件或目录
      */
     openPath(targetPath) {
+        const fs = require('fs');
+        if (!fs.existsSync(targetPath)) {
+            appLogger.error(`Path does not exist: ${targetPath}`);
+            return { success: false, error: '文件或目录不存在' };
+        }
+
         const { exec } = require('child_process');
         let command;
         if (process.platform === 'win32') {
@@ -267,10 +273,55 @@ class AppController extends EventEmitter {
             command = `xdg-open "${targetPath}"`;
         }
 
-        exec(command, (err) => {
-            if (err) {
-                appLogger.error(`Failed to open path: ${targetPath}`, err);
-            }
+        return new Promise((resolve) => {
+            exec(command, (err) => {
+                if (err) {
+                    // Windows 'start' can sometimes return errors even if it works, 
+                    // but usually 0 is success. 
+                    appLogger.error(`Failed to open path: ${targetPath}`, err);
+                    resolve({ success: false, error: '无法打开文件，请检查系统关联程序' });
+                } else {
+                    resolve({ success: true });
+                }
+            });
+        });
+    }
+
+    /**
+     * 在文件夹中显示并选中文件
+     */
+    showInFolder(targetPath) {
+        const fs = require('fs');
+        if (!fs.existsSync(targetPath)) {
+            appLogger.error(`Path does not exist: ${targetPath}`);
+            return { success: false, error: '文件不存在' };
+        }
+
+        const { exec } = require('child_process');
+        const path = require('path');
+        let command;
+
+        if (process.platform === 'win32') {
+            // Windows: 使用 explorer /select
+            command = `explorer.exe /select,"${targetPath}"`;
+        } else if (process.platform === 'darwin') {
+            // macOS: 使用 open -R
+            command = `open -R "${targetPath}"`;
+        } else {
+            // Linux: 通常只是打开父目录
+            command = `xdg-open "${path.dirname(targetPath)}"`;
+        }
+
+        return new Promise((resolve) => {
+            exec(command, (err) => {
+                // explorer.exe /select often returns exit code 1 even on success
+                if (err && (process.platform !== 'win32' || err.code !== 1)) {
+                    appLogger.error(`Failed to show in folder: ${targetPath}`, err);
+                    resolve({ success: false, error: '打开文件夹失败' });
+                } else {
+                    resolve({ success: true });
+                }
+            });
         });
     }
 

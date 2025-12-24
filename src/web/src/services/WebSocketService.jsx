@@ -32,42 +32,80 @@ const WebSocketService = () => {
                     const { type, data } = JSON.parse(event.data);
 
                     switch (type) {
-                        case 'status':
+                        case 'status': {
+                            const oldConnected = useAppStore.getState().isConnected;
+                            const newConnected = data.connected;
                             setConnectionStatus(data);
+
+                            if (oldConnected !== null && oldConnected !== newConnected) {
+                                addMessage({
+                                    id: `sys_${Date.now()}`,
+                                    from: 'system',
+                                    type: 'system',
+                                    text: newConnected ? `串口已连接: ${data.port}` : '串口已断开',
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
                             break;
+                        }
                         case 'chat':
                             addMessage({
-                                id: data.id || Date.now(),
-                                from: data.from || 'remote', // Use 'from' if available
+                                id: data.id || `msg_${Date.now()}`,
+                                from: data.from || 'remote',
+                                type: 'text',
                                 text: data.text,
                                 timestamp: data.timestamp || new Date().toISOString()
                             });
                             break;
-                        case 'progress':
+                        case 'progress': {
+                            const isNew = !useAppStore.getState().transfers.some(t => t.id === data.fileId);
+                            const direction = data.type === 'send' ? 'send' : 'receive';
+
                             updateTransfer(data.fileId, {
                                 id: data.fileId,
                                 name: data.file,
-                                size: data.total ? (data.total / 1024).toFixed(1) + ' KB' : 'Unknown',
-                                percent: data.percent,
-                                direction: data.type === 'send' ? 'send' : 'receive'
+                                size: data.total,
+                                progress: data.percent,
+                                speed: data.speed || 0,
+                                status: data.status || (direction === 'send' ? 'sending' : 'receiving'),
+                                direction
                             });
+
+                            // 如果是新任务且是接收到的，自动添加到聊天记录
+                            if (isNew && direction === 'receive') {
+                                addMessage({
+                                    id: `msg_${data.fileId}`,
+                                    from: 'remote',
+                                    type: 'file',
+                                    content: data.file,
+                                    transferId: data.fileId,
+                                    timestamp: new Date().toISOString()
+                                });
+                            }
                             break;
+                        }
                         case 'complete':
                             updateTransfer(data.fileId, {
-                                percent: 100,
-                                status: 'done',
+                                progress: 100,
+                                speed: 0,
+                                status: 'completed',
                                 fullPath: data.fullPath
                             });
                             addLog({ timestamp: Date.now(), level: 'info', tag: 'FILE', message: `Transfer complete: ${data.file}` });
                             break;
                         case 'error':
+                            if (data.fileId) {
+                                updateTransfer(data.fileId, {
+                                    status: 'failed',
+                                    error: data.message
+                                });
+                            }
                             addLog({ timestamp: Date.now(), level: 'error', tag: 'SYSTEM', message: data.message });
                             break;
                         case 'cancelled':
-                            // Remove the cancelled transfer from the list
-                            import('../store/appStore').then(module => {
-                                const { removeTransfer } = useAppStore.getState();
-                                removeTransfer(data.fileId);
+                            updateTransfer(data.fileId, {
+                                status: 'failed',
+                                error: '已取消'
                             });
                             addLog({ timestamp: Date.now(), level: 'warn', tag: 'FILE', message: `Transfer cancelled: ${data.fileId}` });
                             break;

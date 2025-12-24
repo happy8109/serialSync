@@ -16,42 +16,21 @@ function App() {
             <div className="flex flex-col h-full">
                 {/* Main Grid */}
                 <div className="flex-1 grid grid-cols-12 gap-0 min-h-0">
-                    {/* Left Panel: Chat (7 cols) */}
-                    <div className="col-span-7 border-r border-border bg-background flex flex-col min-w-0 overflow-hidden">
+                    {/* Left Panel: Chat (8 cols) - 增加宽度以适应气泡设计 */}
+                    <div className="col-span-8 border-r border-border bg-background flex flex-col min-w-0 overflow-hidden">
                         <ChatView />
                     </div>
 
-                    {/* Right Panel: Tools (5 cols) */}
-                    <div className="col-span-5 flex flex-col bg-muted/30 min-w-0 overflow-hidden relative">
-                        {/* Tabs Header */}
-                        <div className="flex border-b border-border bg-card/50 shrink-0">
-                            <button
-                                onClick={() => setActiveTab('files')}
-                                className={`flex-1 px-4 py-2.5 text-xs font-medium border-b-2 transition-colors flex items-center justify-center gap-2 ${activeTab === 'files'
-                                    ? 'border-primary text-primary bg-primary/5'
-                                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                                    }`}
-                            >
-                                File Transfer
-                            </button>
-                            <button
-                                onClick={() => setActiveTab('services')}
-                                className={`flex-1 px-4 py-2.5 text-xs font-medium border-b-2 transition-colors flex items-center justify-center gap-2 ${activeTab === 'services'
-                                    ? 'border-primary text-primary bg-primary/5'
-                                    : 'border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/50'
-                                    }`}
-                            >
-                                API Services
-                            </button>
+                    {/* Right Panel: Tools (4 cols) */}
+                    <div className="col-span-4 flex flex-col bg-muted/20 min-w-0 overflow-hidden relative">
+                        {/* Header */}
+                        <div className="flex border-b border-border bg-card/50 shrink-0 px-4 py-2.5 items-center justify-between">
+                            <span className="text-xs font-bold uppercase tracking-wider text-muted-foreground">API Services</span>
                         </div>
 
-                        {/* Tab Content */}
+                        {/* Content */}
                         <div className="flex-1 min-h-0 relative">
-                            {activeTab === 'files' ? (
-                                <TransferList />
-                            ) : (
-                                <ServiceManager />
-                            )}
+                            <ServiceManager />
                         </div>
                     </div>
                 </div>

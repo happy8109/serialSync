@@ -118,7 +118,10 @@ class FileTransferService extends EventEmitter {
             windowStart: 0,
             inflight: new Set(), // 已发送但未确认的 seq
             startTime: Date.now(),
-            fd: null // 将在 accept 后打开
+            fd: null, // 将在 accept 后打开
+            lastChunks: 0,
+            lastSpeedTime: Date.now(),
+            speed: 0
         });
 
         // 发送 FILE_OFFER
@@ -141,6 +144,13 @@ class FileTransferService extends EventEmitter {
         if (session) {
             session.status = 'paused';
             bridgeLogger.info(`Paused transfer for ${fileId}`);
+            this.emit('progress', {
+                fileId: session.fileId,
+                type: session.fd === null ? 'receive' : 'send', // Determine type by fd presence
+                file: session.filePath ? path.basename(session.filePath) : session.name,
+                percent: Math.round((session.windowStart || session.receivedChunks || 0) / (session.totalChunks || 1) * 100),
+                status: 'paused'
+            });
             return true;
         }
         return false;
@@ -151,6 +161,13 @@ class FileTransferService extends EventEmitter {
         if (session && session.status === 'paused') {
             session.status = 'sending';
             bridgeLogger.info(`Resumed transfer for ${fileId}`);
+            this.emit('progress', {
+                fileId: session.fileId,
+                type: 'send',
+                file: path.basename(session.filePath),
+                percent: Math.round(session.windowStart / session.totalChunks * 100),
+                status: 'sending'
+            });
             this._sendWindow(session);
             return true;
         }
@@ -271,14 +288,14 @@ class FileTransferService extends EventEmitter {
 
         let fd;
         try {
+            // 始终写入 .part 文件
             if (isResume) {
-                fd = fs.openSync(savePath, 'r+');
+                fd = fs.openSync(partPath, 'r+');
             } else {
-                fd = fs.openSync(savePath, 'w');
+                fd = fs.openSync(partPath, 'w');
             }
         } catch (err) {
-            bridgeLogger.error(`Failed to open file for writing: ${savePath}`, err);
-            // Ignore this offer if we can't open the file
+            bridgeLogger.error(`Failed to open file for writing: ${partPath}`, err);
             return;
         }
 
@@ -288,13 +305,17 @@ class FileTransferService extends EventEmitter {
             size: offer.size,
             totalChunks: offer.chunks,
             receivedChunks,
-            savePath,
+            savePath: finalPath, // 使用解析冲突后的最终路径
+            partPath,
             metaPath,
             hash: offer.hash,
             fd,
             receivedBitmap,
             lastAckTime: 0,
-            lastPercent: -1
+            lastPercent: -1,
+            lastChunks: 0,
+            lastSpeedTime: Date.now(),
+            speed: 0
         });
 
         let nextSeq = 0;
@@ -343,6 +364,16 @@ class FileTransferService extends EventEmitter {
             }
         }
 
+        // 计算速度
+        const now = Date.now();
+        const timeDiff = (now - session.lastSpeedTime) / 1000;
+        if (timeDiff >= 1) {
+            const chunksDiff = session.windowStart - session.lastChunks;
+            session.speed = Math.floor((chunksDiff * this.chunkSize) / timeDiff);
+            session.lastChunks = session.windowStart;
+            session.lastSpeedTime = now;
+        }
+
         // 发送进度事件
         const percent = Math.round(session.windowStart / session.totalChunks * 100);
         this.emit('progress', {
@@ -351,7 +382,9 @@ class FileTransferService extends EventEmitter {
             file: path.basename(session.filePath),
             current: session.windowStart,
             total: session.totalChunks,
-            percent: percent
+            percent: percent,
+            speed: session.speed,
+            status: 'sending'
         });
     }
 
@@ -396,9 +429,18 @@ class FileTransferService extends EventEmitter {
             } catch (e) { }
         }
 
-        // 发送进度事件
+        // 计算并发送进度
+        const now = Date.now();
+        const timeDiff = (now - session.lastSpeedTime) / 1000;
+        if (timeDiff >= 1) {
+            const chunksDiff = session.receivedChunks - session.lastChunks;
+            session.speed = Math.floor((chunksDiff * this.chunkSize) / timeDiff);
+            session.lastChunks = session.receivedChunks;
+            session.lastSpeedTime = now;
+        }
+
         const percent = Math.round(session.receivedChunks / session.totalChunks * 100);
-        if (percent !== session.lastPercent || session.receivedChunks % 50 === 0) {
+        if (percent !== session.lastPercent || now - session.lastSpeedTime < 100) { // 保证最后100%也能发出去
             session.lastPercent = percent;
             this.emit('progress', {
                 fileId: session.id,
@@ -406,17 +448,14 @@ class FileTransferService extends EventEmitter {
                 file: session.name,
                 current: session.receivedChunks,
                 total: session.totalChunks,
-                percent: percent
+                percent: percent,
+                speed: session.speed,
+                status: 'receiving'
             });
         }
 
         if (session.receivedChunks === session.totalChunks) {
-            this.emit('complete', {
-                fileId: session.id,
-                type: 'receive',
-                file: session.name,
-                fullPath: session.savePath.replace('.part', '')
-            });
+            // 已攒齐分片，等待 FIN 包进行重命名
             this._sendAck(session);
         }
     }
@@ -473,15 +512,27 @@ class FileTransferService extends EventEmitter {
         const session = this.recvSessions.get(req.id);
         if (!session) return;
 
-        // console.log(`[File] Transfer complete: ${session.name}`); // 移除直接打印
         fs.closeSync(session.fd);
 
-        const finalPath = session.savePath.replace('.part', '');
+        const finalPath = session.savePath;
         if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
-        fs.renameSync(session.savePath, finalPath);
 
-        if (fs.existsSync(session.metaPath)) {
-            fs.unlinkSync(session.metaPath);
+        try {
+            fs.renameSync(session.partPath, finalPath);
+
+            // 只有在重命名成功（文件真正就绪）后才发送 complete 事件
+            this.emit('complete', {
+                fileId: session.id,
+                type: 'receive',
+                file: session.name,
+                fullPath: finalPath
+            });
+
+            if (fs.existsSync(session.metaPath)) {
+                fs.unlinkSync(session.metaPath);
+            }
+        } catch (err) {
+            bridgeLogger.error(`Failed to finalize file: ${session.name}`, err);
         }
 
         this.recvSessions.delete(req.id);

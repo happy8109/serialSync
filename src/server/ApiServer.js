@@ -31,7 +31,7 @@ class ApiServer {
 
     _initMiddleware() {
         this.app.use(cors());
-        this.app.use(express.json());
+        this.app.use(express.json({ limit: '1mb' }));
     }
 
     _setupRoutes() {
@@ -144,11 +144,18 @@ class ApiServer {
         });
 
         // 9. 打开文件/目录
-        router.post('/open', (req, res) => {
+        router.post('/open', async (req, res) => {
             const { path } = req.body;
             if (!path) return res.status(400).json({ error: 'Path is required' });
-            this.controller.openPath(path);
-            res.json({ success: true });
+            const result = await this.controller.openPath(path);
+            res.json(result);
+        });
+
+        router.post('/open-folder', async (req, res) => {
+            const { path } = req.body;
+            if (!path) return res.status(400).json({ error: 'Path is required' });
+            const result = await this.controller.showInFolder(path);
+            res.json(result);
         });
 
         // ================= API Forwarding Routes =================

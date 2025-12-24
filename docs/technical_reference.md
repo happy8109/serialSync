@@ -1,4 +1,4 @@
-# SerialSync 技术参考手册 (v2.3)
+# SerialSync 技术参考手册 (v2.5)
 
 本文档整合了 SerialSync 的系统架构、通信协议规范及核心性能机制。
 
@@ -23,8 +23,10 @@
     *   模块化的业务逻辑实现 (文件传输、聊天、系统服务)。
 4.  **接口层 (Interface Layer)**：`AppController`
     *   系统的统一入口 (Facade)，负责命令路由和状态广播。
-5.  **接入层 (Access Layer)**：`ApiServer` (Phase 4)
-    *   基于 HTTP/WebSocket 的 API 服务，为 Web/Desktop 客户端提供远程控制能力。
+5.  **接入层 (Access Layer)**：`ApiServer`
+    *   基于 HTTP/WebSocket 的 API 服务，为持 Web/Desktop 客户端提供远程控制能力。支持 1MB 负载解析，适配大容量 IM 消息推送。
+6.  **持久化层 (Persistence Layer)**：`Store`
+    *   Web 端基于 Zustand Persist 实现聊天历史与传输状态的跨会话保存。
 
 ### 1.3 核心组件
 
@@ -86,7 +88,7 @@ v2.2 新增功能，基于文件 Hash 和元数据文件：
 3.  **续传握手**: 
     *   接收端收到 Offer 时，若本地存在匹配的 `.meta`，则在 `FILE_ACCEPT` 中返回 `nextSeq`。
     *   发送端收到 `nextSeq` 后，直接跳转窗口位置，跳过已传数据。
-4.  **原子完成**: 传输完成后，接收端将 `.part` 临时文件重命名为正式文件名，并删除 `.meta`。
+4.  **原子完成与冲突处理**: 传输完成后，接收端将 `.part` 临时文件重命名为正式文件名。若文件名冲突，支持自增重命名（如 `file_1.zip`）。(v2.5 增强)
 
 ### 3.3 性能指标
 在 115200 bps 波特率下：

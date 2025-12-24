@@ -6,16 +6,13 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.3 (API Forwarding Development)
+**当前版本**: v2.5 (Unified IM & File Transfer)
 
-### 已完成功能 (Phase 1-3)
+### 已完成功能 (Phase 1-4)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
 - [x] **服务层**: MessageService (Chat), FileTransferService (Sliding Window), SystemService。
-- [x] **CLI 工具**: 基于 `inquirer` 的交互式命令行工具。
-- [x] **性能优化**: 大文件传输吞吐量提升 5-10 倍。
-- [x] **断点续传**: 基于文件 Hash 的断点恢复 (v2.2)。
-- [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。
-- [x] **Web UI**: 基于 React + Vite + TailwindCSS 的可视化控制台。
+- [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。 (1MB Payload Limit)
+- [x] **Web UI**: 统一 IM 风格聊天界面，集成文件传输、历史记录持久化、实时速度显示。 (v2.5)
 
 ### 当前开发 (Phase 4 - API Forwarding)
 - [ ] **API 转发 (HTTP 透明代理)**: 通过串口访问对端主机上的本地HTTP服务。
@@ -102,6 +99,13 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2025-12-24 (v2.5) - Unified IM & File Transfer**
+*   **Unified UI**: 将文件传输深度集成到聊天记录中，实现“文件即消息”体验，移除独立文件标签页。
+*   **Persistence**: 引入 `zustand/persist`，聊天记录和传输记录在页面刷新后依然保留。
+*   **Transfer Control**: 气泡内置实时传输速度、进度条以及暂停/恢复/取消按钮。
+*   **System Integration**: 新增“打开文件”及“打开位置（高亮选中）”功能，自动进行物理文件检查。
+*   **UX & Stability**: 优化输入框字数限制(1万字)、滚动条动态控制，并提升后端 API 负载上限至 1MB。
 
 **2025-12-22 (v2.4) - Configuration Management**
 *   **System Settings**: 全面实现配置管理，UI 与 `config/default.json` 双向同步。
