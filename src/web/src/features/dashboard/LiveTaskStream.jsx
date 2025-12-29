@@ -8,6 +8,7 @@ const LogItem = ({ log }) => {
     else if (log.level === 'warn') colorClass = "text-yellow-400";
     else if (log.tag === 'API') colorClass = "text-blue-400";
     else if (log.tag === 'FILE') colorClass = "text-yellow-300";
+    else if (log.tag === 'SYNC') colorClass = "text-indigo-400";
     else if (log.tag === 'SYSTEM') colorClass = "text-green-400";
 
     return (

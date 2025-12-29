@@ -1,268 +1,142 @@
 /**
- * FileTransferService.js
- * 负责文件传输 (P2/P3)
- * 实现协议：FILE_OFFER -> FILE_ACCEPT -> FILE_CHUNK... -> FILE_ACK -> FILE_FIN
- * 改进：增加基于窗口的流控和重传机制
+ * FileTransferService.js - 核心传输引擎
+ * 职责：负责大文件的切片、可靠重传、滑动窗口控制。
+ * 不负责：不负责决定文件存哪，不负责策略，只负责执行。
  */
 
-const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const EventEmitter = require('events');
 const { logger } = require('../../utils/logger');
-
 const bridgeLogger = logger.create('FileService');
 
-// 包类型定义
 const TYPE = {
     FILE_OFFER: 0x20,
     FILE_ACCEPT: 0x21,
     FILE_CHUNK: 0x22,
     FILE_ACK: 0x23,
-    FILE_FIN: 0x24
+    FILE_FIN: 0x24,
+    FILE_FIN_ACK: 0x25
 };
 
 class FileTransferService extends EventEmitter {
-    constructor() {
+    constructor(options = {}) {
         super();
         this.scheduler = null;
+        this.sendSessions = new Map(); // fileId -> session
+        this.recvSessions = new Map(); // fileId -> session
 
-        // 发送会话: { fileId: { filePath, fileSize, totalChunks, windowStart, inflight, status, fd } }
-        this.sendSessions = new Map();
-
-        // 接收会话: { fileName, fileSize, totalChunks, receivedBitmap, savePath, fd, lastAckTime } }
-        this.recvSessions = new Map();
-
-        this.chunkSize = 1024; // 1KB
-        this.windowSize = 50;  // 窗口大小
-        this.savePath = path.join(process.cwd(), 'received'); // Default
-        this.conflictStrategy = 'rename'; // 'rename' | 'overwrite' | 'skip'
+        this.chunkSize = options.chunkSize || 1024;
+        this.windowSize = options.windowSize || 50;
+        this.savePath = options.savePath || path.join(process.cwd(), 'received');
     }
 
     setScheduler(scheduler) {
         this.scheduler = scheduler;
     }
 
-    /**
-     * 动态更新配置
-     * @param {Object} config { chunkSize, windowSize, savePath, conflictStrategy }
-     */
     setConfig(config) {
-        if (config.chunkSize) {
-            this.chunkSize = config.chunkSize;
-            bridgeLogger.info(`Config updated: chunkSize = ${this.chunkSize}`);
-        }
-        if (config.windowSize) {
-            this.windowSize = config.windowSize;
-            bridgeLogger.info(`Config updated: windowSize = ${this.windowSize}`);
-        }
-        if (config.savePath) {
-            // resolve relative paths
-            this.savePath = path.isAbsolute(config.savePath)
-                ? config.savePath
-                : path.join(process.cwd(), config.savePath);
-            bridgeLogger.info(`Config updated: savePath = ${this.savePath}`);
-        }
-        if (config.conflictStrategy) {
-            this.conflictStrategy = config.conflictStrategy;
-            bridgeLogger.info(`Config updated: conflictStrategy = ${this.conflictStrategy}`);
-        }
+        if (!config) return;
+        if (config.chunkSize) this.chunkSize = config.chunkSize;
+        if (config.windowSize) this.windowSize = config.windowSize;
+        if (config.savePath) this.savePath = config.savePath;
+        bridgeLogger.info(`Config updated: chunkSize=${this.chunkSize}, windowSize=${this.windowSize}`);
     }
 
-    getInterestedTypes() {
-        return Object.values(TYPE);
-    }
+    getInterestedTypes() { return Object.values(TYPE); }
 
     handleFrame(frame) {
         switch (frame.type) {
-            case TYPE.FILE_OFFER:
-                this._handleOffer(frame);
-                break;
-            case TYPE.FILE_ACCEPT:
-                this._handleAccept(frame);
-                break;
-            case TYPE.FILE_CHUNK:
-                this._handleChunk(frame);
-                break;
-            case TYPE.FILE_ACK:
-                this._handleAck(frame);
-                break;
-            case TYPE.FILE_FIN:
-                this._handleFin(frame);
-                break;
+            case TYPE.FILE_OFFER: this._handleOffer(frame); break;
+            case TYPE.FILE_ACCEPT: this._handleAccept(frame); break;
+            case TYPE.FILE_CHUNK: this._handleChunk(frame); break;
+            case TYPE.FILE_ACK: this._handleAck(frame); break;
+            case TYPE.FILE_FIN: this._handleFin(frame); break;
+            case TYPE.FILE_FIN_ACK: this._handleFinAck(frame); break;
         }
     }
 
     /**
-     * 发送文件
-     * @param {string} filePath 
+     * 发起一个文件传输任务
      */
-    async sendFile(filePath) {
+    async sendFile(filePath, priority = 2, meta = {}) {
         if (!fs.existsSync(filePath)) throw new Error('File not found');
-
         const stats = fs.statSync(filePath);
-        const fileName = path.basename(filePath);
         const fileId = crypto.randomUUID();
         const totalChunks = Math.ceil(stats.size / this.chunkSize);
 
-        // 计算文件 Hash (MD5) - 用于断点续传校验
-        const fileBuffer = fs.readFileSync(filePath);
-        const fileHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
-
-        // 创建发送会话
-        this.sendSessions.set(fileId, {
-            fileId,
-            filePath,
-            fileSize: stats.size,
-            totalChunks,
-            windowStart: 0,
-            inflight: new Set(), // 已发送但未确认的 seq
-            startTime: Date.now(),
-            fd: null, // 将在 accept 后打开
-            lastChunks: 0,
-            lastSpeedTime: Date.now(),
-            speed: 0
+        const fileHash = await new Promise((resolve, reject) => {
+            const hash = crypto.createHash('md5');
+            const stream = fs.createReadStream(filePath);
+            stream.on('data', d => hash.update(d));
+            stream.on('end', () => resolve(hash.digest('hex')));
+            stream.on('error', e => reject(e));
         });
 
-        // 发送 FILE_OFFER
-        const offer = {
-            id: fileId,
-            name: fileName,
-            size: stats.size,
-            chunks: totalChunks,
-            hash: fileHash
-        };
+        this.sendSessions.set(fileId, {
+            id: fileId, filePath, fileSize: stats.size, totalChunks, priority,
+            windowStart: 0, inflight: new Set(), status: 'offering', fd: null,
+            meta, startTime: Date.now(), lastChunks: 0, lastSpeedTime: Date.now(), speed: 0
+        });
 
-        this._sendJson(TYPE.FILE_OFFER, offer);
-        bridgeLogger.info(`Sending file: ${fileName} (${(stats.size / 1024).toFixed(1)} KB) Hash: ${fileHash.substring(0, 6)}...`);
+        this._sendJson(TYPE.FILE_OFFER, {
+            id: fileId, name: path.basename(filePath), size: stats.size,
+            chunks: totalChunks, hash: fileHash, priority, meta
+        }, 1);
 
+        bridgeLogger.info(`Offer sent: ${path.basename(filePath)} (${fileId.substring(0, 8)})`);
         return fileId;
     }
 
-    pause(fileId) {
-        const session = this.sendSessions.get(fileId);
-        if (session) {
-            session.status = 'paused';
-            bridgeLogger.info(`Paused transfer for ${fileId}`);
-            this.emit('progress', {
-                fileId: session.fileId,
-                type: session.fd === null ? 'receive' : 'send', // Determine type by fd presence
-                file: session.filePath ? path.basename(session.filePath) : session.name,
-                percent: Math.round((session.windowStart || session.receivedChunks || 0) / (session.totalChunks || 1) * 100),
-                status: 'paused'
-            });
-            return true;
-        }
-        return false;
-    }
-
-    resume(fileId) {
-        const session = this.sendSessions.get(fileId);
-        if (session && session.status === 'paused') {
-            session.status = 'sending';
-            bridgeLogger.info(`Resumed transfer for ${fileId}`);
-            this.emit('progress', {
-                fileId: session.fileId,
-                type: 'send',
-                file: path.basename(session.filePath),
-                percent: Math.round(session.windowStart / session.totalChunks * 100),
-                status: 'sending'
-            });
-            this._sendWindow(session);
-            return true;
-        }
-        return false;
-    }
-
     cancel(fileId) {
-        let success = false;
-        // Check sending sessions
         if (this.sendSessions.has(fileId)) {
-            const session = this.sendSessions.get(fileId);
-            if (session.fd) {
-                try { fs.closeSync(session.fd); } catch (e) { }
-            }
+            const s = this.sendSessions.get(fileId);
+            if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
             this.sendSessions.delete(fileId);
-            // Send FIN
-            this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' });
-            bridgeLogger.info(`Cancelled sending ${fileId}`);
-            success = true;
-        }
-        // Check receiving sessions
-        else if (this.recvSessions.has(fileId)) {
-            const session = this.recvSessions.get(fileId);
-            if (session.fd) {
-                try { fs.closeSync(session.fd); } catch (e) { }
-            }
-            // Cleanup temp files
+            this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' }, 1);
+        } else if (this.recvSessions.has(fileId)) {
+            const s = this.recvSessions.get(fileId);
+            if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
             try {
-                if (fs.existsSync(session.savePath)) fs.unlinkSync(session.savePath);
-                if (fs.existsSync(session.metaPath)) fs.unlinkSync(session.metaPath);
+                if (fs.existsSync(s.partPath)) fs.unlinkSync(s.partPath);
+                if (fs.existsSync(s.metaPath)) fs.unlinkSync(s.metaPath);
             } catch (e) { }
             this.recvSessions.delete(fileId);
-
-            // Send FIN
-            this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' });
-            bridgeLogger.info(`Cancelled receiving ${fileId}`);
-            success = true;
+            this._sendJson(TYPE.FILE_FIN, { id: fileId, error: 'cancelled' }, 1);
         }
-
-        if (success) {
-            this.emit('cancelled', { fileId });
-            return true;
-        }
-        return false;
+        this.emit('cancelled', { fileId });
     }
-
-    // --- 内部处理逻辑 ---
 
     _handleOffer(frame) {
         const offer = JSON.parse(frame.body.toString());
-        bridgeLogger.info(`Receiving file: ${offer.name} (${(offer.size / 1024).toFixed(1)} KB)`);
+        const offerEvent = { ...offer, handled: false, customSaveDir: null };
+        this.emit('offer', offerEvent);
 
-        const saveDir = this.savePath;
-        if (!fs.existsSync(saveDir)) {
-            try {
-                fs.mkdirSync(saveDir, { recursive: true });
-            } catch (err) {
-                bridgeLogger.error(`Failed to create save directory: ${saveDir}`, err);
-                return;
-            }
+        // 如果是背景同步但无人接手，直接拒绝，不产生任何临时文件
+        if (offer.meta?.shareId && !offerEvent.handled) {
+            this._sendJson(TYPE.FILE_FIN, { id: offer.id, error: 'rejected' }, 1);
+            return;
         }
 
-        const savePath = path.join(saveDir, offer.name);
-
-        // Resolve conflict
-        let finalPath = savePath;
-        if (fs.existsSync(savePath)) {
-            if (this.conflictStrategy === 'overwrite') {
-                // Do nothing, will overwrite
-                bridgeLogger.info(`File exists, overwriting: ${offer.name}`);
-            } else if (this.conflictStrategy === 'skip') {
-                bridgeLogger.warn(`File exists, skipping: ${offer.name}`);
-                // TODO: Send skip reject? For now just ignore
-                return;
-            } else {
-                // Rename (default)
-                const ext = path.extname(offer.name);
-                const base = path.basename(offer.name, ext);
-                let counter = 1;
-                while (fs.existsSync(finalPath)) {
-                    finalPath = path.join(saveDir, `${base}_${counter}${ext}`);
-                    counter++;
-                }
-                bridgeLogger.info(`File exists, renaming to: ${path.basename(finalPath)}`);
-            }
-        }
-
+        const saveDir = offerEvent.customSaveDir || this.savePath;
+        const finalPath = path.join(saveDir, offer.name);
         const partPath = finalPath + '.part';
         const metaPath = finalPath + '.meta';
 
-        // Check for collision with existing sessions
-        for (const [id, session] of this.recvSessions.entries()) {
-            if (session.savePath === savePath) {
-                bridgeLogger.warn(`Collision detected: ${offer.name} is already being received (session ${id}). Cancelling old session.`);
-                this.cancel(id); // Force cancel the old session to release the file lock
+        // 确保目录存在
+        if (!fs.existsSync(path.dirname(finalPath))) {
+            fs.mkdirSync(path.dirname(finalPath), { recursive: true });
+        }
+
+        // 重复 Offer 检测 (鲁棒性：可能上次 FIN 丢了)
+        for (const [id, s] of this.recvSessions.entries()) {
+            if (s.savePath === finalPath) {
+                if (s.hash === offer.hash) {
+                    this._sendAck(s); // 重新抖动发端
+                    return;
+                }
+                this.cancel(id); // 覆盖旧的非同质任务
                 break;
             }
         }
@@ -270,277 +144,176 @@ class FileTransferService extends EventEmitter {
         let receivedBitmap = new Set();
         let receivedChunks = 0;
         let isResume = false;
-
-        // 检查是否存在断点信息
-        if (fs.existsSync(metaPath) && fs.existsSync(savePath)) {
+        if (fs.existsSync(metaPath) && fs.existsSync(partPath)) {
             try {
-                const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
-                if (meta.hash === offer.hash && meta.size === offer.size) {
-                    receivedBitmap = new Set(meta.bitmap);
+                const m = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+                if (m.hash === offer.hash) {
+                    receivedBitmap = new Set(m.bitmap);
                     receivedChunks = receivedBitmap.size;
                     isResume = true;
-                    bridgeLogger.info(`Resuming transfer for ${offer.name}, progress: ${(receivedChunks / offer.chunks * 100).toFixed(1)}%`);
                 }
-            } catch (e) {
-                bridgeLogger.warn('Failed to read meta file, starting fresh');
-            }
-        }
-
-        let fd;
-        try {
-            // 始终写入 .part 文件
-            if (isResume) {
-                fd = fs.openSync(partPath, 'r+');
-            } else {
-                fd = fs.openSync(partPath, 'w');
-            }
-        } catch (err) {
-            bridgeLogger.error(`Failed to open file for writing: ${partPath}`, err);
-            return;
-        }
-
-        this.recvSessions.set(offer.id, {
-            id: offer.id,
-            name: offer.name,
-            size: offer.size,
-            totalChunks: offer.chunks,
-            receivedChunks,
-            savePath: finalPath, // 使用解析冲突后的最终路径
-            partPath,
-            metaPath,
-            hash: offer.hash,
-            fd,
-            receivedBitmap,
-            lastAckTime: 0,
-            lastPercent: -1,
-            lastChunks: 0,
-            lastSpeedTime: Date.now(),
-            speed: 0
-        });
-
-        let nextSeq = 0;
-        while (receivedBitmap.has(nextSeq)) {
-            nextSeq++;
-        }
-
-        this._sendJson(TYPE.FILE_ACCEPT, {
-            id: offer.id,
-            accepted: true,
-            nextSeq: nextSeq
-        });
-    }
-
-    _handleAccept(frame) {
-        const resp = JSON.parse(frame.body.toString());
-        if (!resp.accepted) {
-            bridgeLogger.warn(`Offer rejected for ${resp.id}`);
-            this.sendSessions.delete(resp.id);
-            return;
-        }
-
-        const session = this.sendSessions.get(resp.id);
-        if (!session) return;
-
-        bridgeLogger.info(`Offer accepted, starting transfer...`, { fileId: resp.id });
-
-        session.fd = fs.openSync(session.filePath, 'r');
-
-        if (resp.nextSeq && resp.nextSeq > 0) {
-            session.windowStart = resp.nextSeq;
-            bridgeLogger.info(`Resuming from chunk ${resp.nextSeq}`);
-        }
-
-        this._sendWindow(session);
-    }
-
-    _sendWindow(session) {
-        if (session.status === 'paused') return;
-        const limit = Math.min(session.totalChunks, session.windowStart + this.windowSize);
-
-        for (let seq = session.windowStart; seq < limit; seq++) {
-            if (!session.inflight.has(seq)) {
-                this._sendChunk(session, seq);
-                session.inflight.add(seq);
-            }
-        }
-
-        // 计算速度
-        const now = Date.now();
-        const timeDiff = (now - session.lastSpeedTime) / 1000;
-        if (timeDiff >= 1) {
-            const chunksDiff = session.windowStart - session.lastChunks;
-            session.speed = Math.floor((chunksDiff * this.chunkSize) / timeDiff);
-            session.lastChunks = session.windowStart;
-            session.lastSpeedTime = now;
-        }
-
-        // 发送进度事件
-        const percent = Math.round(session.windowStart / session.totalChunks * 100);
-        this.emit('progress', {
-            fileId: session.fileId,
-            type: 'send',
-            file: path.basename(session.filePath),
-            current: session.windowStart,
-            total: session.totalChunks,
-            percent: percent,
-            speed: session.speed,
-            status: 'sending'
-        });
-    }
-
-    _sendChunk(session, seq) {
-        const buffer = Buffer.alloc(this.chunkSize);
-        const position = seq * this.chunkSize;
-        const bytesRead = fs.readSync(session.fd, buffer, 0, this.chunkSize, position);
-        const chunkData = buffer.slice(0, bytesRead);
-
-        const idBuf = Buffer.from(session.fileId);
-        const payload = Buffer.concat([idBuf, chunkData]);
-
-        this.scheduler.enqueue(TYPE.FILE_CHUNK, seq, payload, 2);
-    }
-
-    _handleChunk(frame) {
-        if (frame.body.length <= 36) return;
-
-        const fileId = frame.body.slice(0, 36).toString();
-        const data = frame.body.slice(36);
-
-        const session = this.recvSessions.get(fileId);
-        if (!session) return;
-
-        const position = frame.seq * this.chunkSize;
-        fs.writeSync(session.fd, data, 0, data.length, position);
-
-        if (!session.receivedBitmap.has(frame.seq)) {
-            session.receivedBitmap.add(frame.seq);
-            session.receivedChunks++;
-        }
-
-        if (session.receivedChunks % 20 === 0 || session.receivedChunks === session.totalChunks) {
-            this._sendAck(session);
-            try {
-                const meta = {
-                    hash: session.hash,
-                    size: session.size,
-                    bitmap: Array.from(session.receivedBitmap)
-                };
-                fs.writeFileSync(session.metaPath, JSON.stringify(meta));
             } catch (e) { }
         }
 
-        // 计算并发送进度
-        const now = Date.now();
-        const timeDiff = (now - session.lastSpeedTime) / 1000;
-        if (timeDiff >= 1) {
-            const chunksDiff = session.receivedChunks - session.lastChunks;
-            session.speed = Math.floor((chunksDiff * this.chunkSize) / timeDiff);
-            session.lastChunks = session.receivedChunks;
-            session.lastSpeedTime = now;
-        }
+        const fd = fs.openSync(partPath, isResume ? 'r+' : 'w');
+        this.recvSessions.set(offer.id, {
+            ...offer, savePath: finalPath, partPath, metaPath, fd, receivedBitmap, receivedChunks,
+            isHidden: !!offerEvent.handled || !!offer.meta?.isHidden,
+            startTime: Date.now(), lastSpeedTime: Date.now(), lastChunks: receivedChunks, speed: 0
+        });
 
-        const percent = Math.round(session.receivedChunks / session.totalChunks * 100);
-        if (percent !== session.lastPercent || now - session.lastSpeedTime < 100) { // 保证最后100%也能发出去
-            session.lastPercent = percent;
-            this.emit('progress', {
-                fileId: session.id,
-                type: 'receive',
-                file: session.name,
-                current: session.receivedChunks,
-                total: session.totalChunks,
-                percent: percent,
-                speed: session.speed,
-                status: 'receiving'
-            });
-        }
+        let nextSeq = 0;
+        while (receivedBitmap.has(nextSeq)) nextSeq++;
+        this._sendJson(TYPE.FILE_ACCEPT, { id: offer.id, nextSeq }, 1);
+    }
 
-        if (session.receivedChunks === session.totalChunks) {
-            // 已攒齐分片，等待 FIN 包进行重命名
-            this._sendAck(session);
+    _handleAccept(frame) {
+        const data = JSON.parse(frame.body.toString());
+        const s = this.sendSessions.get(data.id);
+        if (!s) return;
+        s.status = 'sending';
+        s.windowStart = data.nextSeq;
+        if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
+        s.fd = fs.openSync(s.filePath, 'r');
+        this._sendWindow(s);
+    }
+
+    _sendWindow(s) {
+        if (s.status !== 'sending') return;
+        for (let i = 0; i < this.windowSize; i++) {
+            const seq = s.windowStart + i;
+            if (seq >= s.totalChunks) break;
+            if (s.inflight.has(seq)) continue;
+
+            const buf = Buffer.alloc(this.chunkSize);
+            const n = fs.readSync(s.fd, buf, 0, this.chunkSize, seq * this.chunkSize);
+            const chunk = n < this.chunkSize ? buf.slice(0, n) : buf;
+
+            const idBuf = Buffer.from(s.id.replace(/-/g, ''), 'hex');
+            const seqBuf = Buffer.alloc(4);
+            seqBuf.writeUInt32BE(seq);
+
+            this.scheduler.enqueue(TYPE.FILE_CHUNK, 0, Buffer.concat([idBuf, seqBuf, chunk]), s.priority);
+            s.inflight.add(seq);
         }
     }
 
-    _sendAck(session) {
-        let maxContinuous = 0;
-        while (session.receivedBitmap.has(maxContinuous)) {
-            maxContinuous++;
+    _handleChunk(frame) {
+        if (frame.body.length < 20) return;
+        const id = [
+            frame.body.slice(0, 4).toString('hex'), frame.body.slice(4, 6).toString('hex'),
+            frame.body.slice(6, 8).toString('hex'), frame.body.slice(8, 10).toString('hex'),
+            frame.body.slice(10, 16).toString('hex')
+        ].join('-');
+        const seq = frame.body.readUInt32BE(16);
+        const data = frame.body.slice(20);
+
+        const s = this.recvSessions.get(id);
+        if (!s || s.receivedBitmap.has(seq)) return;
+
+        fs.writeSync(s.fd, data, 0, data.length, seq * this.chunkSize);
+        s.receivedBitmap.add(seq);
+        s.receivedChunks++;
+
+        if (s.receivedChunks % 20 === 0 || s.receivedChunks === s.totalChunks) {
+            fs.writeFileSync(s.metaPath, JSON.stringify({ hash: s.hash, bitmap: Array.from(s.receivedBitmap) }));
         }
 
-        const ackData = {
-            id: session.id,
-            nextSeq: maxContinuous
-        };
+        this.emit('progress', {
+            fileId: id, type: 'receive', file: s.name, current: s.receivedChunks, total: s.chunks,
+            percent: Math.round(s.receivedChunks / s.chunks * 100), status: 'receiving', isHidden: s.isHidden
+        });
 
-        this._sendJson(TYPE.FILE_ACK, ackData);
+        if (s.receivedChunks === s.chunks) this._sendAck(s);
+    }
+
+    _sendAck(s) {
+        let max = 0;
+        while (s.receivedBitmap.has(max)) max++;
+        this._sendJson(TYPE.FILE_ACK, { id: s.id, nextSeq: max }, 1);
     }
 
     _handleAck(frame) {
         const ack = JSON.parse(frame.body.toString());
-        const session = this.sendSessions.get(ack.id);
-        if (!session) return;
-
-        if (ack.nextSeq > session.windowStart) {
-            for (let i = session.windowStart; i < ack.nextSeq; i++) {
-                session.inflight.delete(i);
-            }
-            session.windowStart = ack.nextSeq;
+        const s = this.sendSessions.get(ack.id);
+        if (!s) return;
+        if (ack.nextSeq > s.windowStart) {
+            for (let i = s.windowStart; i < ack.nextSeq; i++) s.inflight.delete(i);
+            s.windowStart = ack.nextSeq;
         }
-
-        if (session.windowStart >= session.totalChunks) {
-            bridgeLogger.info(`File transfer complete: ${session.filePath}`);
-            this.emit('complete', {
-                fileId: session.fileId,
-                type: 'send',
-                file: path.basename(session.filePath),
-                fullPath: session.filePath
-            });
-            this._sendJson(TYPE.FILE_FIN, { id: session.fileId });
-            fs.closeSync(session.fd);
-            this.sendSessions.delete(session.fileId);
+        if (s.windowStart >= s.totalChunks) {
+            this._sendJson(TYPE.FILE_FIN, { id: s.id }, 1);
+            s.status = 'completing';
             return;
         }
-
-        this._sendWindow(session);
+        this._sendWindow(s);
     }
 
-    _handleFin(frame) {
-        const req = JSON.parse(frame.body.toString());
-        if (req.error === 'cancelled') {
-            this.cancel(req.id);
-            return;
-        }
-        const session = this.recvSessions.get(req.id);
-        if (!session) return;
+    async _handleFin(frame) {
+        const data = JSON.parse(frame.body.toString());
+        if (data.error) { this.cancel(data.id); return; }
+        const s = this.recvSessions.get(data.id);
+        if (!s) return;
 
-        fs.closeSync(session.fd);
-
-        const finalPath = session.savePath;
-        if (fs.existsSync(finalPath)) fs.unlinkSync(finalPath);
-
+        fs.closeSync(s.fd);
         try {
-            fs.renameSync(session.partPath, finalPath);
+            const actual = await this._calcHash(s.partPath);
+            if (actual !== s.hash) throw new Error("Hash Mismatch");
 
-            // 只有在重命名成功（文件真正就绪）后才发送 complete 事件
-            this.emit('complete', {
-                fileId: session.id,
-                type: 'receive',
-                file: session.name,
-                fullPath: finalPath
-            });
+            if (fs.existsSync(s.savePath)) fs.unlinkSync(s.savePath);
+            fs.renameSync(s.partPath, s.savePath);
+            if (fs.existsSync(s.metaPath)) fs.unlinkSync(s.metaPath);
 
-            if (fs.existsSync(session.metaPath)) {
-                fs.unlinkSync(session.metaPath);
-            }
-        } catch (err) {
-            bridgeLogger.error(`Failed to finalize file: ${session.name}`, err);
+            this.emit('complete', { fileId: s.id, type: 'receive', file: s.name, fullPath: s.savePath, isHidden: s.isHidden });
+            if (s.isHidden) this.emit('system_log', `[背景同步] 成功落地: ${s.name} -> ${s.savePath}`);
+
+            // 关键：回复 FIN_ACK
+            this._sendJson(TYPE.FILE_FIN_ACK, { id: s.id }, 1);
+        } catch (e) {
+            bridgeLogger.error(`Finalize failed: ${s.name} - ${e.message}`);
+            this.cancel(s.id);
         }
-
-        this.recvSessions.delete(req.id);
+        this.recvSessions.delete(data.id);
     }
 
-    _sendJson(type, data) {
-        const body = Buffer.from(JSON.stringify(data));
-        this.scheduler.enqueue(type, 0, body, 1);
+    _handleFinAck(frame) {
+        const data = JSON.parse(frame.body.toString());
+        const s = this.sendSessions.get(data.id);
+        if (s) {
+            this.emit('complete', { fileId: s.id, type: 'send', file: path.basename(s.filePath), isHidden: s.meta?.isHidden });
+            if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
+            this.sendSessions.delete(data.id);
+            bridgeLogger.info(`Transfer finished & verified: ${data.id}`);
+        }
+    }
+
+    _calcHash(p) {
+        return new Promise((resolve, reject) => {
+            const h = crypto.createHash('md5');
+            const stream = fs.createReadStream(p);
+            stream.on('data', d => h.update(d));
+            stream.on('end', () => resolve(h.digest('hex')));
+            stream.on('error', e => reject(e));
+        });
+    }
+
+    _sendJson(type, data, priority = 2) {
+        if (this.scheduler) this.scheduler.enqueue(type, 0, Buffer.from(JSON.stringify(data)), priority);
+    }
+
+    getActiveTransferCount(meta = {}) {
+        let count = 0;
+        const scan = (map) => {
+            for (const s of map.values()) {
+                let match = true;
+                for (const [k, v] of Object.entries(meta)) {
+                    if (String(s.meta?.[k]).toLowerCase() !== String(v).toLowerCase()) { match = false; break; }
+                }
+                if (match) count++;
+            }
+        };
+        scan(this.sendSessions); scan(this.recvSessions);
+        return count;
     }
 }
 

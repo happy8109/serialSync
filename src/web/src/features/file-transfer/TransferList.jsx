@@ -82,14 +82,17 @@ const TransferList = () => {
             </div>
 
             <div className="flex-1 min-h-0 flex flex-col">
-                <h3 className="text-sm font-medium text-muted-foreground mb-3 uppercase tracking-wider">传输列表</h3>
+                <div className="flex justify-between items-center mb-3">
+                    <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">传输列表</h3>
+                    {/* Optional: Add toggle for hidden background tasks if needed later */}
+                </div>
                 <div className="flex-1 overflow-y-auto space-y-3 pr-2 scrollbar-thin scrollbar-thumb-border scrollbar-track-transparent">
                     {transfers.length === 0 && (
                         <div className="text-center text-muted-foreground py-10 border border-dashed border-border rounded-md">
                             暂无活动传输
                         </div>
                     )}
-                    {transfers.map(t => (
+                    {transfers.filter(t => !t.isHidden).map(t => (
                         <TransferItem
                             key={t.id}
                             transfer={t}

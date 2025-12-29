@@ -35,7 +35,7 @@ const ChatMessage = ({ message, children }) => {
             <div className={cn(
                 "max-w-[85%] rounded-2xl px-4 py-2.5 shadow-sm text-sm transition-all",
                 isLocal
-                    ? "bg-blue-400 text-white rounded-tr-none hover:bg-blue-500 shadow-blue-600/10"
+                    ? "bg-blue-500 text-white rounded-tr-none hover:bg-blue-400 shadow-blue-600/10"
                     : "bg-card border border-border text-foreground rounded-tl-none hover:bg-card/80"
             )}>
                 {children}

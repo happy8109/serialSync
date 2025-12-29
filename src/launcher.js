@@ -51,7 +51,7 @@ const children = [];
 
 // 1. 启动后端 API Server
 console.log('[Launcher] Starting API Server...');
-const serverProcess = spawn('node', [serverScript, serialPort, apiPort], {
+const serverProcess = spawn('node', ['--no-deprecation', serverScript, serialPort, apiPort], {
     cwd: projectRoot,
     stdio: 'pipe', // 使用 pipe 以便我们可以给日志加前缀
     env: { ...process.env, PORT: String(apiPort) }
@@ -76,7 +76,8 @@ const webProcess = spawn(npmCmd, ['run', 'dev'], {
     env: {
         ...process.env,
         PORT: String(webPort),
-        API_PORT: String(apiPort)
+        API_PORT: String(apiPort),
+        NODE_OPTIONS: '--no-deprecation'
     },
     shell: true
 });
@@ -86,6 +87,13 @@ webProcess.stdout.on('data', (data) => {
     process.stdout.write(`[Frontend] ${data}`);
 });
 webProcess.stderr.on('data', (data) => {
+    const msg = data.toString();
+    // 过滤掉已知的无害警告和错误
+    if (msg.includes('DeprecationWarning') ||
+        msg.includes('ws proxy socket error') ||
+        msg.includes('ECONNABORTED')) {
+        return;
+    }
     process.stderr.write(`[Frontend] ${data}`);
 });
 children.push(webProcess);

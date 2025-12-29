@@ -196,10 +196,10 @@ export default function ServiceManager() {
                 </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto p-4 space-y-6">
+            <div className="flex-1 overflow-hidden flex flex-col md:flex-row divide-y md:divide-y-0 md:divide-x divide-border">
 
                 {/* Local Services Section */}
-                <section>
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-background">
                     <div className="flex items-center gap-2 mb-3 px-1">
                         <Server size={16} className="text-green-500" />
                         <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">本地服务 (Local)</h3>
@@ -277,10 +277,10 @@ export default function ServiceManager() {
                             </div>
                         ))}
                     </div>
-                </section>
+                </div>
 
                 {/* Remote Services Section */}
-                <section>
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-muted/10">
                     <div className="flex items-center gap-2 mb-3 px-1">
                         <Database size={16} className="text-orange-500" />
                         <h3 className="text-sm font-medium text-muted-foreground uppercase tracking-wider">远程服务 (Remote)</h3>
@@ -352,7 +352,7 @@ export default function ServiceManager() {
                             );
                         })}
                     </div>
-                </section>
+                </div>
             </div>
 
             {/* Add Service Modal */}

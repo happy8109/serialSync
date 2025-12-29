@@ -33,7 +33,7 @@ export default defineConfig(({ mode }) => {
                     target: `ws://127.0.0.1:${API_PORT}`,
                     ws: true,
                     configure: (proxy, _options) => {
-                        // Use setTimeout to ensure we run after Vite attaches its own listeners
+                        // Increase timeout to ensure we run after Vite attaches its own listeners
                         setTimeout(() => {
                             // Remove default error handler (which logs connection errors)
                             proxy.removeAllListeners('error');
@@ -43,9 +43,9 @@ export default defineConfig(({ mode }) => {
                                 if (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED' || err.code === 'EPIPE') {
                                     return;
                                 }
-                                console.log('Proxy error:', err);
+                                // console.log('Proxy error:', err); // Silence other proxy errors too for now to keep terminal clean
                             });
-                        }, 0);
+                        }, 200); // 200ms delay to be safe
 
                         proxy.on('proxyReq', (proxyReq, req, _res) => {
                             proxyReq.on('error', (err) => {

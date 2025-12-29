@@ -602,6 +602,16 @@ class HttpProxyService extends EventEmitter {
             service.lastCheck = Date.now();
         }
     }
+
+    /**
+     * Broadcast discovery query
+     */
+    broadcastDiscovery() {
+        // Fire and forget, ignore timeouts to prevent unhandled rejections
+        return this.queryRemoteServices().catch(err => {
+            this.logger.debug('Broadcast discovery timeout (expected if no peers)');
+        });
+    }
 }
 
 module.exports = HttpProxyService;

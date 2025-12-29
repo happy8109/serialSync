@@ -158,6 +158,16 @@ class ApiServer {
             res.json(result);
         });
 
+        router.get('/utils/select-folder', async (req, res) => {
+            const result = await this.controller.selectFolder();
+            res.json(result);
+        });
+
+        router.post('/sync/discover', (req, res) => {
+            this.controller.triggerSyncDiscovery();
+            res.json({ success: true, message: 'Discovery started' });
+        });
+
         // ================= API Forwarding Routes =================
 
         // 10. 获取本地服务列表
@@ -305,6 +315,10 @@ class ApiServer {
             this._broadcast('complete', data);
         });
 
+        this.controller.on('status-msg', (log) => {
+            this._broadcast('log', log);
+        });
+
         // 捕获错误，防止进程崩溃
         this.controller.on('error', (err) => {
             this.logger.error(`Controller Error: ${err.message}`);
@@ -318,6 +332,10 @@ class ApiServer {
 
         this.controller.on('cancelled', (data) => {
             this._broadcast('cancelled', data);
+        });
+
+        this.controller.on('sync_discovery_update', (shares) => {
+            this._broadcast('sync_discovery', shares);
         });
 
         // 定期广播状态 (每秒)

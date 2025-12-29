@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 
-const useAppStore = create(
+export const useAppStore = create(
     persist(
         (set) => ({
             // Connection Status (Not persisted)
@@ -9,11 +9,15 @@ const useAppStore = create(
             port: null,
             baudRate: null,
             stats: { rxBytes: 0, txBytes: 0, crcErrors: 0 },
+            peerActivities: {},
             setConnectionStatus: (status) => set((state) => ({
                 isConnected: status.connected !== undefined ? status.connected : state.isConnected,
                 port: status.port !== undefined ? status.port : state.port,
                 baudRate: status.baudRate !== undefined ? status.baudRate : state.baudRate,
-                stats: status.bridgeStats !== undefined ? status.bridgeStats : state.stats
+                stats: status.bridgeStats !== undefined ? status.bridgeStats : state.stats,
+                config: status.config !== undefined ? status.config : state.config,
+                discoveredShares: status.discoveredShares || state.discoveredShares,
+                peerActivities: status.peerActivities || state.peerActivities
             })),
 
             // Active Tab
@@ -47,6 +51,10 @@ const useAppStore = create(
                 transfers: state.transfers.filter(t => t.id !== id)
             })),
             clearTransfers: () => set({ transfers: [] }),
+
+            // Sync Discovery
+            discoveredShares: [],
+            setDiscoveredShares: (shares) => set({ discoveredShares: shares }),
         }),
         {
             name: 'serial-sync-storage', // localStorage key

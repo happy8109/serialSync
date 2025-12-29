@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import useAppStore from '../store/appStore';
 
 const WebSocketService = () => {
-    const { setConnectionStatus, addLog, addMessage, updateTransfer } = useAppStore();
+    const { setConnectionStatus, addLog, addMessage, updateTransfer, setDiscoveredShares } = useAppStore();
 
     useEffect(() => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -57,7 +57,27 @@ const WebSocketService = () => {
                                 timestamp: data.timestamp || new Date().toISOString()
                             });
                             break;
+                        case 'log':
+                            addLog(data);
+                            break;
                         case 'progress': {
+                            // Sync tasks are marked as 'isHidden'
+                            if (data.isHidden) {
+                                // Only update transfer store for sync tasks (optional, maybe we don't even want them in the transfer list?)
+                                // For now, let's keep them in the store but flagged, so components can filter them out.
+                                updateTransfer(data.fileId, {
+                                    id: data.fileId,
+                                    name: data.file,
+                                    size: data.total,
+                                    progress: data.percent,
+                                    speed: data.speed || 0,
+                                    status: data.status || (data.type === 'send' ? 'sending' : 'receiving'),
+                                    direction: data.type === 'send' ? 'send' : 'receive',
+                                    isHidden: true // Propagate hidden flag
+                                });
+                                break; // Skip chat message creation
+                            }
+
                             const isNew = !useAppStore.getState().transfers.some(t => t.id === data.fileId);
                             const direction = data.type === 'send' ? 'send' : 'receive';
 
@@ -108,6 +128,9 @@ const WebSocketService = () => {
                                 error: '已取消'
                             });
                             addLog({ timestamp: Date.now(), level: 'warn', tag: 'FILE', message: `Transfer cancelled: ${data.fileId}` });
+                            break;
+                        case 'sync_discovery':
+                            setDiscoveredShares(data);
                             break;
                         default:
                             console.log('Unknown message type:', type);

@@ -11,6 +11,7 @@ const MessageService = require('../services/MessageService');
 const SystemService = require('../services/SystemService');
 const FileTransferService = require('../services/FileTransferService');
 const HttpProxyService = require('../services/HttpProxyService');
+const FileSyncService = require('../services/FileSyncService');
 const { logger } = require('../../utils/logger');
 const appLogger = logger.create('App');
 
@@ -28,12 +29,18 @@ class AppController extends EventEmitter {
         this.systemService = new SystemService();
         this.fileTransferService = new FileTransferService();
         this.httpProxyService = new HttpProxyService();
+        this.fileSyncService = new FileSyncService();
 
         // 注册服务
         this.serviceManager.register(this.messageService);
         this.serviceManager.register(this.systemService);
         this.serviceManager.register(this.fileTransferService);
         this.serviceManager.register(this.httpProxyService);
+        this.serviceManager.register(this.fileSyncService);
+
+        // 注入依赖
+        this.fileSyncService.setScheduler(this.scheduler);
+        this.fileSyncService.setFileTransferService(this.fileTransferService);
 
         // 绑定事件
         this._setupListeners();
@@ -51,8 +58,19 @@ class AppController extends EventEmitter {
             this.fileTransferService.setConfig(config.get('transfer'));
         }
 
+        if (config.has('syncTasks')) {
+            this.fileSyncService.updateTasks(config.get('syncTasks'));
+        }
+
         // 监听 Bridge 状态
-        this.bridge.on('open', () => this.emit('status', this.getStatus()));
+        this.bridge.on('open', () => {
+            this.emit('status', this.getStatus());
+            // 连接成功后自动广播服务发现查询
+            setTimeout(() => {
+                this.fileSyncService.broadcastDiscovery();
+                this.httpProxyService.broadcastDiscovery(); // Also ensure HTTP proxy discovers services
+            }, 1000);
+        });
         this.bridge.on('close', () => this.emit('status', this.getStatus()));
         this.bridge.on('error', (err) => this.emit('error', err));
         this.bridge.on('status-message', (msg) => this.emit('system_message', `[串口] ${msg}`));
@@ -89,6 +107,24 @@ class AppController extends EventEmitter {
         this.fileTransferService.on('cancelled', (data) => {
             appLogger.info(`Transfer cancelled: ${data.fileId}`);
             this.emit('cancelled', data);
+        });
+
+        this.fileTransferService.on('system_log', (msg) => {
+            this.emit('status-msg', {
+                timestamp: Date.now(),
+                level: 'info',
+                tag: 'SYNC',
+                message: msg
+            });
+        });
+
+        // 监听同步日志
+        this.fileSyncService.on('log', (log) => {
+            this.emit('status-msg', log); // 给 ApiServer 广播
+        });
+
+        this.fileSyncService.on('discovery_update', (shares) => {
+            this.emit('sync_discovery_update', shares);
         });
     }
 
@@ -132,6 +168,11 @@ class AppController extends EventEmitter {
             this.bridge.setConfig(config.serial);
         }
 
+        // 热更新同步任务
+        if (config.syncTasks) {
+            this.fileSyncService.updateTasks(config.syncTasks);
+        }
+
         // 3. 运行时热更新: 系统选项
         if (config.system) {
             // Service Discovery
@@ -170,6 +211,9 @@ class AppController extends EventEmitter {
             }
             if (config.transfer) {
                 currentConfig.transfer = { ...currentConfig.transfer, ...config.transfer };
+            }
+            if (config.syncTasks) {
+                currentConfig.syncTasks = config.syncTasks;
             }
             if (config.system) {
                 // Map UI system config to actual file config structure
@@ -325,6 +369,44 @@ class AppController extends EventEmitter {
         });
     }
 
+    /**
+     * 打开系统文件夹选择对话框 (Windows 专用)
+     */
+    async selectFolder() {
+        if (process.platform !== 'win32') {
+            return { success: false, error: '目前仅支持 Windows 系统路径选择' };
+        }
+
+        const { exec } = require('child_process');
+        // 使用 Shell.Application COM 对象，这种方式在 Windows 上更通用且不需要加载额外的程序集
+        const psCommand = `
+            $app = New-Object -ComObject Shell.Application;
+            $folder = $app.BrowseForFolder(0, 'SerialSync: 请选择同步目录', 0);
+            if ($folder) { $folder.Self.Path }
+        `.replace(/\n/g, ' ').trim();
+
+        const fullCommand = `powershell -NoProfile -Command "${psCommand}"`;
+        appLogger.info('Opening system folder dialog via PowerShell...');
+
+        return new Promise((resolve) => {
+            exec(fullCommand, (error, stdout, stderr) => {
+                if (error) {
+                    appLogger.error('PowerShell folder dialog error:', error);
+                    resolve({ success: false, error: '调用系统对话框失败' });
+                } else {
+                    const selectedPath = stdout.trim();
+                    if (selectedPath) {
+                        appLogger.info(`Folder selected: ${selectedPath}`);
+                        resolve({ success: true, path: selectedPath });
+                    } else {
+                        appLogger.info('Folder selection cancelled by user');
+                        resolve({ success: false, cancelled: true });
+                    }
+                }
+            });
+        });
+    }
+
     getStatus() {
         // 直接从磁盘读取最新配置，确保 UI 显示的任何时候都是文件里的真实值
         // 这是最稳健的方式，绕过所有内存缓存
@@ -354,7 +436,9 @@ class AppController extends EventEmitter {
 
             // Legacy / Component specific status (kept for runtime stats visibility)
             bridgeStats: this.bridge.stats,
-            queueStats: this.scheduler.getStatus()
+            queueStats: this.scheduler.getStatus(),
+            discoveredShares: this.fileSyncService.getDiscoveredShares(), // Expose discovered shares in status
+            peerActivities: this.fileSyncService.getPeerActivities()
         };
     }
 
@@ -382,6 +466,11 @@ class AppController extends EventEmitter {
 
     getRemoteServices() {
         return this.httpProxyService.getRemoteServices();
+    }
+
+    triggerSyncDiscovery() {
+        this.fileSyncService.broadcastDiscovery();
+        return this.fileSyncService.getDiscoveredShares();
     }
 }
 
