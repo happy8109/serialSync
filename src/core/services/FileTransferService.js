@@ -30,6 +30,9 @@ class FileTransferService extends EventEmitter {
         this.chunkSize = options.chunkSize || 1024;
         this.windowSize = options.windowSize || 50;
         this.savePath = options.savePath || path.join(process.cwd(), 'received');
+
+        // Watchdog: 2秒检查一次超时重传
+        setInterval(() => this._watchdog(), 2000);
     }
 
     setScheduler(scheduler) {
@@ -159,7 +162,8 @@ class FileTransferService extends EventEmitter {
         this.recvSessions.set(offer.id, {
             ...offer, savePath: finalPath, partPath, metaPath, fd, receivedBitmap, receivedChunks,
             isHidden: !!offerEvent.handled || !!offer.meta?.isHidden,
-            startTime: Date.now(), lastSpeedTime: Date.now(), lastChunks: receivedChunks, speed: 0
+            startTime: Date.now(), lastSpeedTime: Date.now(), lastChunks: receivedChunks, speed: 0,
+            lastProgressTime: Date.now(), ackTimer: null
         });
 
         let nextSeq = 0;
@@ -173,6 +177,7 @@ class FileTransferService extends EventEmitter {
         if (!s) return;
         s.status = 'sending';
         s.windowStart = data.nextSeq;
+        s.lastProgressTime = Date.now();
         if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
         s.fd = fs.openSync(s.filePath, 'r');
         this._sendWindow(s);
@@ -214,6 +219,7 @@ class FileTransferService extends EventEmitter {
         fs.writeSync(s.fd, data, 0, data.length, seq * this.chunkSize);
         s.receivedBitmap.add(seq);
         s.receivedChunks++;
+        s.lastProgressTime = Date.now();
 
         if (s.receivedChunks % 20 === 0 || s.receivedChunks === s.totalChunks) {
             fs.writeFileSync(s.metaPath, JSON.stringify({ hash: s.hash, bitmap: Array.from(s.receivedBitmap) }));
@@ -224,13 +230,22 @@ class FileTransferService extends EventEmitter {
             percent: Math.round(s.receivedChunks / s.chunks * 100), status: 'receiving', isHidden: s.isHidden
         });
 
-        if (s.receivedChunks === s.chunks) this._sendAck(s);
+        if (s.receivedChunks === s.chunks || s.receivedBitmap.size % this.windowSize === 0) {
+            this._sendAck(s);
+        } else {
+            // 延迟 ACK：如果当前包不足以触发窗口确认，500ms 后强制确认
+            if (s.ackTimer) clearTimeout(s.ackTimer);
+            s.ackTimer = setTimeout(() => {
+                if (this.recvSessions.has(id)) this._sendAck(s);
+            }, 500);
+        }
     }
 
     _sendAck(s) {
-        let max = 0;
-        while (s.receivedBitmap.has(max)) max++;
-        this._sendJson(TYPE.FILE_ACK, { id: s.id, nextSeq: max }, 1);
+        if (s.ackTimer) { clearTimeout(s.ackTimer); s.ackTimer = null; }
+        let nextSeq = 0;
+        while (s.receivedBitmap.has(nextSeq)) nextSeq++;
+        this._sendJson(TYPE.FILE_ACK, { id: s.id, nextSeq }, 1);
     }
 
     _handleAck(frame) {
@@ -240,6 +255,7 @@ class FileTransferService extends EventEmitter {
         if (ack.nextSeq > s.windowStart) {
             for (let i = s.windowStart; i < ack.nextSeq; i++) s.inflight.delete(i);
             s.windowStart = ack.nextSeq;
+            s.lastProgressTime = Date.now();
         }
         if (s.windowStart >= s.totalChunks) {
             this._sendJson(TYPE.FILE_FIN, { id: s.id }, 1);
@@ -284,6 +300,18 @@ class FileTransferService extends EventEmitter {
             if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
             this.sendSessions.delete(data.id);
             bridgeLogger.info(`Transfer finished & verified: ${data.id}`);
+        }
+    }
+
+    _watchdog() {
+        const now = Date.now();
+        for (const s of this.sendSessions.values()) {
+            if (s.status === 'sending' && (now - s.lastProgressTime > 3000)) {
+                bridgeLogger.warn(`[发送超时] 3秒未收到 ACK，重发当前窗口: ${s.id.substring(0, 8)}`);
+                s.lastProgressTime = now;
+                s.inflight.clear();
+                this._sendWindow(s);
+            }
         }
     }
 
