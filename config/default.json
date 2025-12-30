@@ -1,7 +1,7 @@
 {
   "serial": {
-    "port": "COM4",
-    "baudRate": 115200,
+    "port": "COM3",
+    "baudRate": 576000,
     "dataBits": 8,
     "stopBits": 1,
     "parity": "none",
@@ -11,14 +11,14 @@
     "maxReconnectAttempts": 0,
     "heartbeatInterval": 5000,
     "heartbeatTimeout": 15000,
-    "path": "COM4"
+    "path": "COM3"
   },
   "transfer": {
-    "chunkSize": 1024,
-    "windowSize": 50,
+    "chunkSize": 2048,
+    "windowSize": 25,
     "timeout": 5000,
     "savePath": "./received",
-    "conflictStrategy": "rename"
+    "conflictStrategy": "overwrite"
   },
   "message": {
     "maxLength": 4096
@@ -74,7 +74,7 @@
       "shareId": "BMY2GFJU",
       "frequency": "30s",
       "direction": "localToRemote",
-      "enabled": true,
+      "enabled": false,
       "entries": [
         {
           "name": "Default",
@@ -89,7 +89,7 @@
       "shareId": "SKFLOL2W",
       "frequency": "1m",
       "direction": "localToRemote",
-      "enabled": true,
+      "enabled": false,
       "entries": [
         {
           "name": "Default",

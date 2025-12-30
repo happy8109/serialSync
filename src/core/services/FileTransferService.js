@@ -28,8 +28,9 @@ class FileTransferService extends EventEmitter {
         this.recvSessions = new Map(); // fileId -> session
 
         this.chunkSize = options.chunkSize || 1024;
-        this.windowSize = options.windowSize || 50;
+        this.windowSize = options.windowSize || 10;
         this.savePath = options.savePath || path.join(process.cwd(), 'received');
+        this.conflictStrategy = options.conflictStrategy || 'rename';
 
         // Watchdog: 2秒检查一次超时重传
         setInterval(() => this._watchdog(), 2000);
@@ -44,7 +45,8 @@ class FileTransferService extends EventEmitter {
         if (config.chunkSize) this.chunkSize = config.chunkSize;
         if (config.windowSize) this.windowSize = config.windowSize;
         if (config.savePath) this.savePath = config.savePath;
-        bridgeLogger.info(`Config updated: chunkSize=${this.chunkSize}, windowSize=${this.windowSize}`);
+        if (config.conflictStrategy) this.conflictStrategy = config.conflictStrategy;
+        bridgeLogger.info(`Config updated: chunkSize=${this.chunkSize}, windowSize=${this.windowSize}, strategy=${this.conflictStrategy}`);
     }
 
     getInterestedTypes() { return Object.values(TYPE); }
@@ -92,6 +94,64 @@ class FileTransferService extends EventEmitter {
         return fileId;
     }
 
+    pause(fileId) {
+        if (this.sendSessions.has(fileId)) {
+            const s = this.sendSessions.get(fileId);
+            s.status = 'paused';
+            bridgeLogger.info(`Transfer paused (send): ${fileId}`);
+            this.emit('progress', {
+                fileId, type: 'send', file: path.basename(s.filePath),
+                current: s.windowStart, total: s.totalChunks, size: s.fileSize,
+                percent: Math.round(s.windowStart / s.totalChunks * 100),
+                status: 'paused', isHidden: s.meta?.isHidden, speed: s.speed || 0
+            });
+        } else if (this.recvSessions.has(fileId)) {
+            const s = this.recvSessions.get(fileId);
+            s.status = 'paused';
+            bridgeLogger.info(`Transfer paused (recv): ${fileId}`);
+            this.emit('progress', {
+                fileId, type: 'receive', file: s.name,
+                current: s.receivedChunks, total: s.chunks, size: s.size,
+                percent: Math.round(s.receivedChunks / s.chunks * 100),
+                status: 'paused', isHidden: s.isHidden, speed: s.speed || 0
+            });
+        }
+    }
+
+    resume(fileId) {
+        if (this.sendSessions.has(fileId)) {
+            const s = this.sendSessions.get(fileId);
+            if (s.status === 'paused') {
+                s.status = 'sending';
+                s.lastProgressTime = Date.now();
+                bridgeLogger.info(`Transfer resumed (send): ${fileId}`);
+                // 立即通知前端状态更新
+                this.emit('progress', {
+                    fileId, type: 'send', file: path.basename(s.filePath),
+                    current: s.windowStart, total: s.totalChunks, size: s.fileSize,
+                    percent: Math.round(s.windowStart / s.totalChunks * 100),
+                    status: 'sending', isHidden: s.meta?.isHidden, speed: s.speed || 0
+                });
+                this._sendWindow(s); // 重新激活发送循环
+            }
+        } else if (this.recvSessions.has(fileId)) {
+            const s = this.recvSessions.get(fileId);
+            if (s.status === 'paused') {
+                s.status = 'receiving';
+                s.lastProgressTime = Date.now();
+                bridgeLogger.info(`Transfer resumed (recv): ${fileId}`);
+                // 立即通知前端状态更新
+                this.emit('progress', {
+                    fileId, type: 'receive', file: s.name,
+                    current: s.receivedChunks, total: s.chunks, size: s.size,
+                    percent: Math.round(s.receivedChunks / s.chunks * 100),
+                    status: 'receiving', isHidden: s.isHidden, speed: s.speed || 0
+                });
+                this._sendAck(s); // 发送 ACK 唤醒发送端
+            }
+        }
+    }
+
     cancel(fileId) {
         if (this.sendSessions.has(fileId)) {
             const s = this.sendSessions.get(fileId);
@@ -123,7 +183,12 @@ class FileTransferService extends EventEmitter {
         }
 
         const saveDir = offerEvent.customSaveDir || this.savePath;
-        const finalPath = path.join(saveDir, offer.name);
+        let fileName = offer.name;
+        let finalPath = path.join(saveDir, fileName);
+
+        // 解耦：在 Offer 阶段不再检查目标文件是否存在，也不执行重命名/跳过逻辑
+        // 一律先接收到临时文件，等传输完成后在 _handleFin 中统一处理冲突落地
+        bridgeLogger.info(`接收 Offer: ${fileName} -> ${finalPath} (Conflict check deferred)`);
         const partPath = finalPath + '.part';
         const metaPath = finalPath + '.meta';
 
@@ -132,14 +197,19 @@ class FileTransferService extends EventEmitter {
             fs.mkdirSync(path.dirname(finalPath), { recursive: true });
         }
 
-        // 重复 Offer 检测 (鲁棒性：可能上次 FIN 丢了)
+        // 重复 Offer 检测
         for (const [id, s] of this.recvSessions.entries()) {
             if (s.savePath === finalPath) {
-                if (s.hash === offer.hash) {
-                    this._sendAck(s); // 重新抖动发端
+                // 如果 ID 相同，说明是同一个任务的重传（如握手阶段重试），回复 ACK 即可
+                if (s.id === offer.id) {
+                    bridgeLogger.info(`[重复Offer] ID相同，重发 ACK: ${id}`);
+                    this._sendAck(s);
                     return;
                 }
-                this.cancel(id); // 覆盖旧的非同质任务
+                // 如果 ID 不同，说明是新发起的任务（哪怕文件内容一样），直接覆盖旧任务
+                // 这样能防止旧任务僵死导致新任务无法启动
+                bridgeLogger.warn(`[冲突] 发现旧Session占用路径，强制清理: ${id} -> ${offer.id}`);
+                this.cancel(id);
                 break;
             }
         }
@@ -168,6 +238,7 @@ class FileTransferService extends EventEmitter {
 
         let nextSeq = 0;
         while (receivedBitmap.has(nextSeq)) nextSeq++;
+        bridgeLogger.info(`[Offer处理完毕] 准备发送 ACCEPT: ${offer.id}, NextSeq=${nextSeq}`);
         this._sendJson(TYPE.FILE_ACCEPT, { id: offer.id, nextSeq }, 1);
     }
 
@@ -227,7 +298,9 @@ class FileTransferService extends EventEmitter {
 
         this.emit('progress', {
             fileId: id, type: 'receive', file: s.name, current: s.receivedChunks, total: s.chunks,
-            percent: Math.round(s.receivedChunks / s.chunks * 100), status: 'receiving', isHidden: s.isHidden
+            size: s.size, // 传输总字节数
+            percent: Math.round(s.receivedChunks / s.chunks * 100), status: s.status, isHidden: s.isHidden,
+            speed: this._updateSpeed(s, s.receivedChunks)
         });
 
         if (s.receivedChunks === s.chunks || s.receivedBitmap.size % this.windowSize === 0) {
@@ -252,11 +325,38 @@ class FileTransferService extends EventEmitter {
         const ack = JSON.parse(frame.body.toString());
         const s = this.sendSessions.get(ack.id);
         if (!s) return;
+
+        // 【关键修复】如果状态还是 offering 但收到了 ACK，说明对方已经接受了（ACCEPT包可能丢了）
+        // 或者是重发 Offer 后对方回复了 ACK。直接提升状态为 sending。
+        if (s.status === 'offering') {
+            s.status = 'sending';
+            s.windowStart = ack.nextSeq;
+            s.lastProgressTime = Date.now();
+            if (s.fd) try { fs.closeSync(s.fd); } catch (e) { }
+            s.fd = fs.openSync(s.filePath, 'r');
+            bridgeLogger.info(`[隐式握手] 收到 ACK，自动从 offering用于 sending: ${s.id}`);
+        }
+
         if (ack.nextSeq > s.windowStart) {
             for (let i = s.windowStart; i < ack.nextSeq; i++) s.inflight.delete(i);
             s.windowStart = ack.nextSeq;
             s.lastProgressTime = Date.now();
         }
+
+        // 发送端进度反馈
+        this.emit('progress', {
+            fileId: ack.id,
+            type: 'send',
+            file: path.basename(s.filePath),
+            current: s.windowStart,
+            total: s.totalChunks,
+            size: s.fileSize, // 传输总字节数
+            percent: Math.round(s.windowStart / s.totalChunks * 100),
+            status: s.status,
+            isHidden: s.meta?.isHidden,
+            speed: this._updateSpeed(s, s.windowStart)
+        });
+
         if (s.windowStart >= s.totalChunks) {
             this._sendJson(TYPE.FILE_FIN, { id: s.id }, 1);
             s.status = 'completing';
@@ -276,9 +376,46 @@ class FileTransferService extends EventEmitter {
             const actual = await this._calcHash(s.partPath);
             if (actual !== s.hash) throw new Error("Hash Mismatch");
 
-            if (fs.existsSync(s.savePath)) fs.unlinkSync(s.savePath);
-            fs.renameSync(s.partPath, s.savePath);
+            // 冲突处理延迟到这里执行
+            // 重新计算最终路径（因为可能中途文件被创建了）
+            let finalSavePath = s.savePath;
+            const isSyncTask = !!s.meta?.shareId;
+            const strategy = isSyncTask ? 'overwrite' : this.conflictStrategy;
+            bridgeLogger.info(`[Finalize] File=${s.name}, Path=${finalSavePath}, Exists=${fs.existsSync(finalSavePath)}, Strategy=${strategy}`);
+
+            if (fs.existsSync(finalSavePath)) {
+                if (strategy === 'skip') {
+                    // 既然已经传完了，Skip 实际上意味着“丢弃接收到的临时文件”
+                    bridgeLogger.info(`[Conflict] Consummation skipped (file exists): ${path.basename(finalSavePath)}`);
+                    // 清理临时文件
+                    try { if (fs.existsSync(s.partPath)) fs.unlinkSync(s.partPath); } catch (e) { }
+                    try { if (fs.existsSync(s.metaPath)) fs.unlinkSync(s.metaPath); } catch (e) { }
+                    // 虽然丢弃了，但对发送端来说是成功的（因为传输没错），回复 FIN_ACK
+                    this.emit('complete', { fileId: s.id, type: 'receive', file: s.name, fullPath: null, status: 'skipped' });
+                    this._sendJson(TYPE.FILE_FIN_ACK, { id: s.id }, 1);
+                    this.recvSessions.delete(data.id);
+                    return;
+                }
+                if (strategy === 'rename') {
+                    const dir = path.dirname(finalSavePath);
+                    const ext = path.extname(s.name);
+                    const base = path.basename(s.name, ext);
+                    let counter = 1;
+                    while (fs.existsSync(finalSavePath)) {
+                        finalSavePath = path.join(dir, `${base} (${counter})${ext}`);
+                        counter++;
+                    }
+                    bridgeLogger.info(`[Conflict] Final renaming to: ${finalSavePath}`);
+                }
+                // overwrite 模式直接往下走，覆盖即可
+            }
+
+            if (fs.existsSync(finalSavePath)) fs.unlinkSync(finalSavePath); // 确保 renameSync 不会报错（Windows下 rename 不能覆盖）
+            fs.renameSync(s.partPath, finalSavePath);
             if (fs.existsSync(s.metaPath)) fs.unlinkSync(s.metaPath);
+
+            // 更新 session 中的 savePath 以便后续事件使用正确的最终路径
+            s.savePath = finalSavePath;
 
             this.emit('complete', { fileId: s.id, type: 'receive', file: s.name, fullPath: s.savePath, isHidden: s.isHidden });
             if (s.isHidden) this.emit('system_log', `[背景同步] 成功落地: ${s.name} -> ${s.savePath}`);
@@ -311,8 +448,27 @@ class FileTransferService extends EventEmitter {
                 s.lastProgressTime = now;
                 s.inflight.clear();
                 this._sendWindow(s);
+            } else if (s.status === 'offering' && (now - s.startTime > 3000)) {
+                bridgeLogger.warn(`[握手超时] 3秒未收到 ACCEPT，重发 Offer: ${s.id.substring(0, 8)}`);
+                s.startTime = now;
+                this._sendJson(TYPE.FILE_OFFER, {
+                    id: s.id, name: path.basename(s.filePath), size: s.fileSize,
+                    chunks: s.totalChunks, hash: s.meta?.hash, priority: s.priority, meta: s.meta
+                }, 1);
             }
         }
+    }
+
+    _updateSpeed(s, currentChunks) {
+        const now = Date.now();
+        const duration = (now - s.lastSpeedTime) / 1000;
+        if (duration >= 1.0) {
+            const delta = currentChunks - s.lastChunks;
+            s.speed = Math.round((delta * this.chunkSize) / duration);
+            s.lastChunks = currentChunks;
+            s.lastSpeedTime = now;
+        }
+        return s.speed || 0;
     }
 
     _calcHash(p) {

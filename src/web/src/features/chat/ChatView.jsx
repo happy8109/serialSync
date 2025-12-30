@@ -231,7 +231,10 @@ const ChatView = () => {
                     <input
                         type="file"
                         ref={fileInputRef}
-                        onChange={(e) => handleFileSelect(Array.from(e.target.files))}
+                        onChange={(e) => {
+                            handleFileSelect(Array.from(e.target.files));
+                            e.target.value = ''; // Reset input to allow selecting same file again
+                        }}
                         className="hidden"
                         multiple
                     />

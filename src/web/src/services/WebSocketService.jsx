@@ -68,7 +68,7 @@ const WebSocketService = () => {
                                 updateTransfer(data.fileId, {
                                     id: data.fileId,
                                     name: data.file,
-                                    size: data.total,
+                                    size: data.size,
                                     progress: data.percent,
                                     speed: data.speed || 0,
                                     status: data.status || (data.type === 'send' ? 'sending' : 'receiving'),
@@ -84,7 +84,7 @@ const WebSocketService = () => {
                             updateTransfer(data.fileId, {
                                 id: data.fileId,
                                 name: data.file,
-                                size: data.total,
+                                size: data.size, // Use byte size instead of chunk count
                                 progress: data.percent,
                                 speed: data.speed || 0,
                                 status: data.status || (direction === 'send' ? 'sending' : 'receiving'),

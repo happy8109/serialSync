@@ -316,6 +316,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                             <option value="115200">115200</option>
                                             <option value="230400">230400</option>
                                             <option value="460800">460800</option>
+                                            <option value="576000">576000</option>
                                             <option value="921600">921600</option>
                                         </select>
                                     </div>
@@ -488,6 +489,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                             value={transferConfig.chunkSize}
                                             onChange={(e) => setTransferConfig({ ...transferConfig, chunkSize: parseInt(e.target.value) })}
                                             className="w-full px-3 py-2 rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                                            placeholder="1024"
                                         />
                                     </div>
                                     <div className="space-y-2">
@@ -500,6 +502,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                             value={transferConfig.windowSize}
                                             onChange={(e) => setTransferConfig({ ...transferConfig, windowSize: parseInt(e.target.value) })}
                                             className="w-full px-3 py-2 rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary text-sm"
+                                            placeholder="50"
                                         />
                                     </div>
                                 </div>
