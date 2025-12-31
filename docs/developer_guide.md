@@ -14,12 +14,11 @@
 - [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。 (1MB Payload Limit)
 - [x] **Web UI**: 统一 IM 风格聊天界面，集成文件传输、历史记录持久化、实时速度显示。 (v2.5)
 
-### 当前开发 (Phase 4 - API Forwarding)
-- [ ] **API 转发 (HTTP 透明代理)**: 通过串口访问对端主机上的本地HTTP服务。
-  - 支持服务发现、双向调用、配置驱动
-  - 详细设计: [API Forwarding Design](./api_forwarding_design.md)
-
-详细开发计划请参考: [Implementation Plan](./implementation_plan.md)
+### 未来计划 (Phase 5 - Air-gap Bridge)
+- [ ] **v2.6 隔离网络数据摆渡**: 
+  - 支持第三方客户端身份识别（Nickname/IP）。
+  - 实现聊天消息中的文件下载功能。
+  - 将 `received_files` 暴露为静态下载服务。
 
 ---
 

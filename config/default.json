@@ -66,36 +66,5 @@
   "web": {
     "port": 5173
   },
-  "syncTasks": [
-    {
-      "id": "task_1767002535837",
-      "name": "考试.pdf",
-      "description": "全国计算机技术与软件专业技术资格（水平）考试",
-      "shareId": "BMY2GFJU",
-      "frequency": "30s",
-      "direction": "localToRemote",
-      "enabled": false,
-      "entries": [
-        {
-          "name": "Default",
-          "localPath": "C:\\Users\\Office\\Desktop\\全国计算机技术与软件专业技术资格（水平）考试.pdf"
-        }
-      ]
-    },
-    {
-      "id": "task_1767006433499",
-      "name": "vspd",
-      "description": "vspdvspd",
-      "shareId": "SKFLOL2W",
-      "frequency": "1m",
-      "direction": "localToRemote",
-      "enabled": false,
-      "entries": [
-        {
-          "name": "Default",
-          "localPath": "C:\\Users\\Office\\Desktop\\vspd6.9"
-        }
-      ]
-    }
-  ]
+  "syncTasks": []
 }

@@ -53,7 +53,7 @@ const children = [];
 console.log('[Launcher] Starting API Server...');
 const serverProcess = spawn('node', ['--no-deprecation', serverScript, serialPort, apiPort], {
     cwd: projectRoot,
-    stdio: 'pipe', // 使用 pipe 以便我们可以给日志加前缀
+    stdio: 'pipe',
     env: { ...process.env, PORT: String(apiPort) }
 });
 
@@ -63,10 +63,14 @@ serverProcess.stdout.on('data', (data) => {
 serverProcess.stderr.on('data', (data) => {
     process.stderr.write(`[Backend] ${data}`);
 });
+
+serverProcess.on('error', (err) => {
+    console.error(`[Launcher] Failed to start Backend: ${err.message}`);
+});
+
 children.push(serverProcess);
 
 // 2. 启动前端 Web UI (Vite Dev Server)
-// 注意: Windows 下 npm 是 npm.cmd
 const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 
 console.log('[Launcher] Starting Web UI...');
@@ -83,11 +87,18 @@ const webProcess = spawn(npmCmd, ['run', 'dev'], {
 });
 
 webProcess.stdout.on('data', (data) => {
-    // 过滤掉一些嘈杂的 Vite 输出，或者直接透传
     process.stdout.write(`[Frontend] ${data}`);
 });
+
 webProcess.stderr.on('data', (data) => {
     const msg = data.toString();
+
+    // 检查是否是由于依赖缺失导致的错误 (通常在 Windows 下会是乱码，但我们可以捕获并提示)
+    if (msg.includes('vite') && (msg.includes('not found') || msg.includes(''))) {
+        console.error('\n[Launcher] [ERROR] Frontend dependencies might be missing!');
+        console.error(`[Launcher] Please run: cd "${webDir}" && npm install\n`);
+    }
+
     // 过滤掉已知的无害警告和错误
     if (msg.includes('DeprecationWarning') ||
         msg.includes('ws proxy socket error') ||
@@ -96,6 +107,15 @@ webProcess.stderr.on('data', (data) => {
     }
     process.stderr.write(`[Frontend] ${data}`);
 });
+
+webProcess.on('error', (err) => {
+    if (err.code === 'ENOENT') {
+        console.error(`[Launcher] [ERROR] Could not find "${npmCmd}". Is Node.js installed?`);
+    } else {
+        console.error(`[Launcher] [ERROR] Failed to start Frontend: ${err.message}`);
+    }
+});
+
 children.push(webProcess);
 
 // 3. 优雅退出
