@@ -23,9 +23,6 @@ const MainLayout = ({ children }) => {
                     <div className="flex items-center gap-4 text-xs font-mono text-muted-foreground">
                         {isConnected && (
                             <>
-                                <div className="flex items-center gap-2 px-2 py-1 bg-muted/30 rounded border border-border/30">
-                                    <span>{baudRate} bps</span>
-                                </div>
                                 <div className="flex items-center gap-3 px-2 py-1 bg-muted/30 rounded border border-border/30">
                                     <span className="flex items-center gap-1">
                                         <span className="text-green-500">RX:</span> {(stats.rxBytes / 1024).toFixed(1)} KB
@@ -52,6 +49,10 @@ const MainLayout = ({ children }) => {
                             />
                             <span className="font-medium">
                                 {isConnected ? port : 'DISCONNECTED'}
+                            </span>
+                            <span className="w-px h-3 bg-border/50 mx-1"></span>
+                            <span className="text-muted-foreground/70">
+                                {isConnected ? `${baudRate} bps` : 'null bps'}
                             </span>
                         </div>
                     </div>

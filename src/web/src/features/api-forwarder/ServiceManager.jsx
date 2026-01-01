@@ -2,7 +2,10 @@ import React, { useState, useEffect } from 'react';
 import { Globe, RefreshCw, Server, Play, Activity, Database, ArrowRight, Plus, Copy, Check, Trash2, Edit2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
+import useAppStore from '../../store/appStore';
+
 export default function ServiceManager() {
+    const { addLog } = useAppStore();
     const [localServices, setLocalServices] = useState([]);
     const [remoteServices, setRemoteServices] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -63,6 +66,7 @@ export default function ServiceManager() {
 
     const handleQueryRemote = async () => {
         setQuerying(true);
+        addLog({ timestamp: Date.now(), level: 'info', tag: 'API', message: 'Scanning for remote services...' });
         try {
             await fetch('/api/services/remote/query', {
                 method: 'POST',
@@ -82,6 +86,7 @@ export default function ServiceManager() {
         } catch (e) {
             console.error(e);
             setQuerying(false);
+            addLog({ timestamp: Date.now(), level: 'error', tag: 'API', message: 'Failed to scan remote services' });
         }
     };
 
@@ -102,6 +107,8 @@ export default function ServiceManager() {
                 body: JSON.stringify(newService)
             });
 
+            addLog({ timestamp: Date.now(), level: 'info', tag: 'API', message: `Registered local service: ${newService.id}` });
+
             setIsAddModalOpen(false);
             setEditingServiceId(null);
             fetchLocalServices();
@@ -116,6 +123,7 @@ export default function ServiceManager() {
             });
         } catch (e) {
             console.error(e);
+            addLog({ timestamp: Date.now(), level: 'error', tag: 'API', message: `Failed to save service: ${e.message}` });
         }
     };
 
@@ -138,6 +146,7 @@ export default function ServiceManager() {
             await fetch(`/api/services/local/${serviceId}`, {
                 method: 'DELETE'
             });
+            addLog({ timestamp: Date.now(), level: 'warn', tag: 'API', message: `Deleted local service: ${serviceId}` });
             fetchLocalServices();
         } catch (e) {
             console.error(e);
@@ -147,6 +156,7 @@ export default function ServiceManager() {
     const handleCallService = async (serviceId) => {
         setCallingServiceId(serviceId);
         setCallResult(null);
+        addLog({ timestamp: Date.now(), level: 'info', tag: 'API', message: `Calling remote service: ${serviceId}...` });
         try {
             const res = await fetch(`/api/services/remote/${serviceId}/call`, {
                 method: 'POST',
@@ -155,8 +165,10 @@ export default function ServiceManager() {
             });
             const data = await res.json();
             setCallResult(data);
+            addLog({ timestamp: Date.now(), level: 'info', tag: 'API', message: `Call success: ${serviceId}` });
         } catch (e) {
             setCallResult({ error: e.message });
+            addLog({ timestamp: Date.now(), level: 'error', tag: 'API', message: `Call failed: ${serviceId} - ${e.message}` });
         } finally {
             setCallingServiceId(null);
         }

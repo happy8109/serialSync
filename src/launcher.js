@@ -93,8 +93,9 @@ webProcess.stdout.on('data', (data) => {
 webProcess.stderr.on('data', (data) => {
     const msg = data.toString();
 
-    // 检查是否是由于依赖缺失导致的错误 (通常在 Windows 下会是乱码，但我们可以捕获并提示)
-    if (msg.includes('vite') && (msg.includes('not found') || msg.includes(''))) {
+    // 检查是否是由于依赖缺失导致的错误
+    // 只有当明确包含 "not found" 且包含 "vite" 时才认为是依赖丢失
+    if (msg.includes('vite') && msg.includes('not found')) {
         console.error('\n[Launcher] [ERROR] Frontend dependencies might be missing!');
         console.error(`[Launcher] Please run: cd "${webDir}" && npm install\n`);
     }

@@ -92,15 +92,25 @@ const WebSocketService = () => {
                             });
 
                             // 如果是新任务且是接收到的，自动添加到聊天记录
-                            if (isNew && direction === 'receive') {
-                                addMessage({
-                                    id: `msg_${data.fileId}`,
-                                    from: 'remote',
-                                    type: 'file',
-                                    content: data.file,
-                                    transferId: data.fileId,
-                                    timestamp: new Date().toISOString()
+                            if (isNew) {
+                                // Log the start of the transfer
+                                addLog({
+                                    timestamp: Date.now(),
+                                    level: 'info',
+                                    tag: 'FILE',
+                                    message: `Started ${direction}: ${data.file} (${(data.size / 1024).toFixed(1)} KB)`
                                 });
+
+                                if (direction === 'receive') {
+                                    addMessage({
+                                        id: `msg_${data.fileId}`,
+                                        from: 'remote',
+                                        type: 'file',
+                                        content: data.file,
+                                        transferId: data.fileId,
+                                        timestamp: new Date().toISOString()
+                                    });
+                                }
                             }
                             break;
                         }
@@ -131,6 +141,12 @@ const WebSocketService = () => {
                             break;
                         case 'sync_discovery':
                             setDiscoveredShares(data);
+                            addLog({
+                                timestamp: Date.now(),
+                                level: 'info',
+                                tag: 'SYNC',
+                                message: `Discovered ${Object.keys(data).length} remote shares`
+                            });
                             break;
                         default:
                             console.log('Unknown message type:', type);
