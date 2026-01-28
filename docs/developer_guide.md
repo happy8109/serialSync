@@ -42,16 +42,30 @@
 3. **部署提示**: 如果遇到 `EBADENGINE` 错误，请参考上述版本组合修改 `src/web/package.json`。
 
 ### 2.2 安装依赖
+本项目已实现自动化的前后端依赖同步。在根目录运行一次即可完成全部安装：
 ```bash
 npm install
 ```
+> [!TIP]
+> 根目录的 `package.json` 配置了 `postinstall` 钩子，会自动触发 `src/web` 目录下的 `npm install`。
 
-### 2.3 启动 API Server (推荐)
+### 2.3 深度清理与环境重置
+如果遇到文件被锁定、更换 Node 状态或需要彻底清除依赖，请使用：
 ```bash
-# 启动服务器 (默认端口 3000)
-node src/server/index.js
+npm run clean
+```
+该命令会杀掉所有 Node 进程，并采用“重构+后台异步删除”策略强效清理两处的 `node_modules`。
 
-# 启动并自动连接串口 (方便测试)
+### 2.4 启动应用 (推荐)
+这是全功能开发模式，会同时启动后端 Server 和前端 Web UI：
+```bash
+npm run app
+```
+
+### 2.5 启动独立后端 (Legacy/高级)
+如果您只想运行 API Server（不带前端热更新）：
+```bash
+# 启动并自动连接串口
 node src/server/index.js COM1 3000
 ```
 访问 `test/api_client.html` 进行测试。
@@ -98,6 +112,15 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2026-01-28 (v2.6) - UI Layout & Dev Ops Optimization**
+*   **UI Layout**: 将界面调整为 50/50 分屏，聊天与工具区视野平行；Logo 替换为 `Cpu` 图标。
+*   **Log Stream**: 将任务流拆分为 System, File, API, Sync 四列，提供独立垂直滚动条及像素级对齐。
+*   **Dev Ops**: 
+    - 新增 `npm run clean` 强力清理工具。
+    - 实现 `postinstall` 自动化钩子，支持一键安装前后端依赖。
+    - 优化波特率显示逻辑及实时日志紧凑样式。
+    - 实现前端 LAN (局域网) 访问支持。
 
 **2025-12-24 (v2.5) - Unified IM & File Transfer**
 *   **Unified UI**: 将文件传输深度集成到聊天记录中，实现“文件即消息”体验，移除独立文件标签页。

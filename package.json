@@ -8,6 +8,8 @@
     "dev": "nodemon src/index.js",
     "cli": "node src/cli.js",
     "app": "node src/launcher.js",
+    "clean": "powershell ./scripts/clean.ps1",
+    "postinstall": "cd src/web && npm install",
     "lint": "eslint src/",
     "format": "prettier --write src/"
   },
