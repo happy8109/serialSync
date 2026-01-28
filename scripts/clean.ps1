@@ -1,34 +1,64 @@
-# clean.ps1 - 强效清理 node_modules
-# 用法: powershell ./scripts/clean.ps1
+# clean.ps1 - Deep cleanup for node_modules
+# Usage: pwsh ./scripts/clean.ps1
 
-Write-Host "--- 开始深度清理 SerialSync 环境 ---" -ForegroundColor Cyan
+Write-Host "--- SerialSync Environment Cleanup ---" -ForegroundColor Cyan
 
-# 1. 尝试杀掉所有可能锁定文件的 Node 进程
-Write-Host "[1/3] 正在终止 Node.js 进程..."
+# Define roots
+$RootDir = Get-Item "$PSScriptRoot\.."
+$WebDir = Join-Path $RootDir.FullName "src\web"
+
+# 1. Kill Node/Nodemon processes
+Write-Host "[1/4] Terminating Node.js processes..."
 Get-Process | Where-Object { $_.Name -match "node|nodemon" } | Stop-Process -Force -ErrorAction SilentlyContinue
 
-# 2. 定义清理函数（重命名大法 + 后台异步删除）
-function SafeDelete($path) {
-    if (Test-Path $path) {
-        $tempName = "$path" + "_old_" + (Get-Date -Format "HHmmss")
+# 2. Cleanup Function
+function SafeDelete {
+    param([string]$targetDir)
+    if (Test-Path $targetDir) {
+        $name = Split-Path $targetDir -Leaf
+        $parent = Split-Path $targetDir -Parent
+        
+        Write-Host "  [-] Found: $targetDir" -ForegroundColor Gray
+        
         try {
-            # 先重命名，这样文件夹立即从项目结构中消失
-            Rename-Item -Path $path -NewName $tempName -ErrorAction Stop
-            Write-Host "  [+] 已重命名 $path -> $tempName (准备后台删除)" -ForegroundColor Green
-            
-            # 开启一个低优先级的后台作业去执行删除，不阻塞当前任务
-            Start-Job -ScriptBlock { param($p) Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue } -ArgumentList $tempName | Out-Null
-        } catch {
-            Write-Host "  [!] 无法重命名 $path，请尝试关闭 VS Code 后再试。" -ForegroundColor Yellow
+            # --- Try direct deletion first ---
+            Write-Host "  [*] Attempting direct deletion..." -ForegroundColor Gray
+            Remove-Item -Path $targetDir -Recurse -Force -ErrorAction Stop
+            Write-Host "  [+] Success: $name deleted directly." -ForegroundColor Green
         }
+        catch {
+            # --- Fallback to rename strategy if locked ---
+            Write-Host "  [!] Direct delete failed (File Locked). Using fallback strategy..." -ForegroundColor Yellow
+            $tempName = $name + "_old_" + (Get-Date -Format "HHmmss")
+            $tempPath = Join-Path $parent $tempName
+            
+            try {
+                Rename-Item -Path $targetDir -NewName $tempName -ErrorAction Stop
+                Write-Host "  [+] Moved: $name -> $tempName (background deletion started)" -ForegroundColor Green
+                
+                # Async delete in background
+                Start-Job -ScriptBlock { 
+                    param($p) 
+                    Remove-Item -Path $p -Recurse -Force -ErrorAction SilentlyContinue 
+                } -ArgumentList $tempPath | Out-Null
+            }
+            catch {
+                Write-Host "  [!] CRITICAL: Failed to move $targetDir. Error: $($_.Exception.Message)" -ForegroundColor Red
+            }
+        }
+    }
+    else {
+        Write-Host "  [?] Not found: $targetDir" -ForegroundColor Gray
     }
 }
 
-Write-Host "[2/3] 正在清理 node_modules..."
-SafeDelete "node_modules"
-SafeDelete "src/web/node_modules"
+Write-Host "[2/4] Cleaning Root node_modules..."
+SafeDelete (Join-Path $RootDir.FullName "node_modules")
 
-# 3. 提示
-Write-Host "[3/3] 清理指令已下达。" -ForegroundColor Cyan
-Write-Host "您现在可以立即运行 'npm install' 重新安装依赖了。" -ForegroundColor White
+Write-Host "[3/4] Cleaning Web node_modules..."
+SafeDelete (Join-Path $WebDir "node_modules")
+
+# 4. Final steps
+Write-Host "[4/4] Cleanup commands completed." -ForegroundColor Cyan
+Write-Host "You can now run 'npm install' to reinstall dependencies." -ForegroundColor White
 Write-Host "------------------------------------"
