@@ -133,7 +133,9 @@ class AppController extends EventEmitter {
      */
     async connect(port, options = {}) {
         try {
-            await this.bridge.connect(port, options);
+            // 如果 options 是数字，说明传入的是波特率，为了兼容性，将其包装为对象
+            const finalOptions = typeof options === 'number' ? { baudRate: options } : options;
+            await this.bridge.connect(port, finalOptions);
             return true;
         } catch (err) {
             throw err;
@@ -429,6 +431,7 @@ class AppController extends EventEmitter {
             activePort: this.bridge.port ? this.bridge.port.path : null,
             port: this.bridge.port ? this.bridge.port.path : null, // Restore for frontend compatibility
             activeBaudRate: this.bridge.baudRate,
+            baudRate: this.bridge.baudRate, // Restore for frontend compatibility
 
             // Full Configuration (Source of Truth for settings UI)
             // 直接下发文件内容

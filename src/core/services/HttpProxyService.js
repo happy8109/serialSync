@@ -453,6 +453,9 @@ class HttpProxyService extends EventEmitter {
     // =========================================================================
 
     async queryRemoteServices(filter = {}) {
+        // Also trigger local health check immediately
+        this._checkLocalServices();
+
         const id = this._generateRequestId();
         const payload = JSON.stringify({ id, filter });
 
@@ -569,11 +572,16 @@ class HttpProxyService extends EventEmitter {
                 headers: { ...service.headers },
                 timeout: 5000 // 5s timeout
             }, res => {
-                // Any response means it's alive (even 4xx/5xx)
-                // We just want to know if the service is reachable
-                res.destroy(); // We don't care about the body
-                service.status = 'online';
+                // Any response with valid status code means it's alive
+                // 2xx (Success), 3xx (Redirect), 401/403 (Auth required but reachable)
+                // 404 (Not Found) or 5xx (Server Error) are considered offline/invalid for this detection
+                if ((res.statusCode >= 200 && res.statusCode < 400) || res.statusCode === 401 || res.statusCode === 403) {
+                    service.status = 'online';
+                } else {
+                    service.status = 'offline';
+                }
                 service.lastCheck = Date.now();
+                res.destroy(); // We don't care about the body
             });
 
             req.on('error', (err) => {

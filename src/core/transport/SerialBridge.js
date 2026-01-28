@@ -64,7 +64,8 @@ class SerialBridge extends EventEmitter {
 
         // 合并配置: 默认配置 -> 配置文件 -> 运行时参数
         const serialConfig = config.get('serial');
-        const finalConfig = { ...serialConfig, ...optionsOverride };
+        const finalOverride = typeof optionsOverride === 'number' ? { baudRate: optionsOverride } : optionsOverride;
+        const finalConfig = { ...serialConfig, ...finalOverride };
 
         return new Promise((resolve, reject) => {
             // Set intent config immediately so getStatus returns correct info during connection attempts

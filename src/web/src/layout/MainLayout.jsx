@@ -52,7 +52,7 @@ const MainLayout = ({ children }) => {
                             </span>
                             <span className="w-px h-3 bg-border/50 mx-1"></span>
                             <span className="text-muted-foreground/70">
-                                {isConnected ? `${baudRate} bps` : 'null bps'}
+                                {isConnected ? (baudRate ? `${baudRate} bps` : '-- bps') : 'Disconnected'}
                             </span>
                         </div>
                     </div>
