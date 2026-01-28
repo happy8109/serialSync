@@ -38,12 +38,11 @@ const WebSocketService = () => {
                             setConnectionStatus(data);
 
                             if (oldConnected !== null && oldConnected !== newConnected) {
-                                addMessage({
-                                    id: `sys_${Date.now()}`,
-                                    from: 'system',
-                                    type: 'system',
-                                    text: newConnected ? `串口已连接: ${data.port}` : '串口已断开',
-                                    timestamp: new Date().toISOString()
+                                addLog({
+                                    timestamp: Date.now(),
+                                    level: 'info',
+                                    tag: 'SYSTEM',
+                                    message: newConnected ? `串口已连接: ${data.port}` : '串口已断开'
                                 });
                             }
                             break;

@@ -1,7 +1,7 @@
 {
   "serial": {
     "port": "COM4",
-    "baudRate": 576000,
+    "baudRate": 460800,
     "dataBits": 8,
     "stopBits": 1,
     "parity": "none",
@@ -64,7 +64,7 @@
     "port": 3000
   },
   "web": {
-    "port": 5173
+    "port": 5174
   },
   "syncTasks": []
 }

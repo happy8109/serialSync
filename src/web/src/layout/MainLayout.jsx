@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Settings, Activity, Zap } from 'lucide-react';
+import { Settings, Activity, Zap, Cpu, Cable } from 'lucide-react';
 import useAppStore from '../store/appStore';
 import { cn } from '../lib/utils';
 import SettingsModal from '../features/settings/SettingsModal';
@@ -13,8 +13,8 @@ const MainLayout = ({ children }) => {
             {/* Header */}
             <header className="h-14 border-b border-border bg-card flex items-center justify-between px-4 shrink-0 shadow-sm z-10">
                 <div className="flex items-center gap-3">
-                    <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground font-bold text-lg shadow-sm">
-                        S
+                    <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground shadow-sm">
+                        <Cable size={20} />
                     </div>
                     <h1 className="font-bold text-lg tracking-tight">SerialSync <span className="text-xs font-normal text-muted-foreground ml-1">v2.0</span></h1>
                 </div>
