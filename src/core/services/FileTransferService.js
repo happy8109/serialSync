@@ -31,6 +31,7 @@ class FileTransferService extends EventEmitter {
         this.windowSize = options.windowSize || 10;
         this.savePath = options.savePath || path.join(process.cwd(), 'received');
         this.conflictStrategy = options.conflictStrategy || 'rename';
+        this.timeout = options.timeout || 10000; // 默认 10 秒
 
         // Watchdog: 2秒检查一次超时重传
         setInterval(() => this._watchdog(), 2000);
@@ -46,7 +47,8 @@ class FileTransferService extends EventEmitter {
         if (config.windowSize) this.windowSize = config.windowSize;
         if (config.savePath) this.savePath = config.savePath;
         if (config.conflictStrategy) this.conflictStrategy = config.conflictStrategy;
-        bridgeLogger.info(`Config updated: chunkSize=${this.chunkSize}, windowSize=${this.windowSize}, strategy=${this.conflictStrategy}`);
+        if (config.timeout) this.timeout = config.timeout;
+        bridgeLogger.info(`Config updated: chunkSize=${this.chunkSize}, windowSize=${this.windowSize}, strategy=${this.conflictStrategy}, timeout=${this.timeout}`);
     }
 
     getInterestedTypes() { return Object.values(TYPE); }
@@ -443,13 +445,13 @@ class FileTransferService extends EventEmitter {
     _watchdog() {
         const now = Date.now();
         for (const s of this.sendSessions.values()) {
-            if (s.status === 'sending' && (now - s.lastProgressTime > 3000)) {
-                bridgeLogger.warn(`[发送超时] 3秒未收到 ACK，重发当前窗口: ${s.id.substring(0, 8)}`);
+            if (s.status === 'sending' && (now - s.lastProgressTime > this.timeout)) {
+                bridgeLogger.warn(`[传输超时重传] ${this.timeout}ms未收到响应，重发当前窗口: ${s.id.substring(0, 8)}`);
                 s.lastProgressTime = now;
                 s.inflight.clear();
                 this._sendWindow(s);
-            } else if (s.status === 'offering' && (now - s.startTime > 3000)) {
-                bridgeLogger.warn(`[握手超时] 3秒未收到 ACCEPT，重发 Offer: ${s.id.substring(0, 8)}`);
+            } else if (s.status === 'offering' && (now - s.startTime > this.timeout)) {
+                bridgeLogger.warn(`[握手超时] ${Math.round(this.timeout / 1000)}秒未收到 ACCEPT，重发 Offer: ${s.id.substring(0, 8)}`);
                 s.startTime = now;
                 this._sendJson(TYPE.FILE_OFFER, {
                     id: s.id, name: path.basename(s.filePath), size: s.fileSize,
