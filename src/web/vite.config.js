@@ -25,6 +25,7 @@ export default defineConfig(({ mode }) => {
         server: {
             host: true,
             port: parseInt(WEB_PORT),
+            allowedHosts: true,
             proxy: {
                 '/api': {
                     target: `http://127.0.0.1:${API_PORT}`,
