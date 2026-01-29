@@ -1,7 +1,7 @@
 {
   "serial": {
-    "port": "COM3",
-    "baudRate": 230400,
+    "port": "COM4",
+    "baudRate": 460800,
     "dataBits": 8,
     "stopBits": 1,
     "parity": "none",
@@ -11,7 +11,7 @@
     "maxReconnectAttempts": 0,
     "heartbeatInterval": 5000,
     "heartbeatTimeout": 15000,
-    "path": "COM3"
+    "path": "COM4"
   },
   "transfer": {
     "chunkSize": 2048,

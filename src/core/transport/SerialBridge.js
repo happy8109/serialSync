@@ -88,6 +88,12 @@ class SerialBridge extends EventEmitter {
                     return reject(err);
                 }
 
+                // 显式拉高 DTR 和 RTS 信号 (物理串口通常需要，尤其是 USB 转串口适配器)
+                this.port.set({ dtr: true, rts: true }, (setErr) => {
+                    if (setErr) bridgeLogger.debug(`[串口] 设置 DTR/RTS 失败: ${setErr.message}`);
+                    else bridgeLogger.info(`[串口] 信号已就绪 (DTR=1, RTS=1)`);
+                });
+
                 this.isConnected = true;
                 this.reconnectAttempts = 0;
                 this._setupListeners();
@@ -286,6 +292,10 @@ class SerialBridge extends EventEmitter {
      * 内部：处理接收流 (COBS Frame Splitting)
      */
     _handleData(chunk) {
+        // 调试日志：记录接收到的数据长度，帮助确认硬件层面是否有信号进来
+        if (chunk.length > 0) {
+            bridgeLogger.debug(`[串口] 接收到原始数据: ${chunk.length} 字节`);
+        }
         this.buffer = Buffer.concat([this.buffer, chunk]);
 
         let offset = 0;
