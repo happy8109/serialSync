@@ -16,6 +16,7 @@ const TYPE = {
     SYNC_LIST_REQ: 0x40,
     SYNC_LIST_RESP: 0x41,
     SYNC_PULL_REQ: 0x42,
+    SYNC_DELETE_REQ: 0x43, // 新增删除请求
     SYNC_SHARES_QUERY: 0x44,
     SYNC_SHARES_ANNOUNCE: 0x45
 };
@@ -163,6 +164,23 @@ class FileSyncService extends EventEmitter {
                     this._log(task.id, `请求拉取: ${f.name}`);
                     this._sendJson(TYPE.SYNC_PULL_REQ, { shareId: task.shareId, entryName: entry.name, fileName: f.name }, 1);
                 }
+
+                // Delete Local (订阅端多出的文件)
+                for (const f of diff.delLocal) {
+                    const realLocalPath = resolvePath(entry.localPath);
+                    const fullPath = fs.statSync(realLocalPath).isFile() ? realLocalPath : path.join(realLocalPath, f.name);
+                    if (fs.existsSync(fullPath)) {
+                        this._log(task.id, `清理本地多余文件: ${f.name}`);
+                        syncLogger.info(`Deleting local file: ${fullPath}`);
+                        try { fs.unlinkSync(fullPath); } catch (e) { }
+                    }
+                }
+
+                // Delete Remote (订阅端发现远端多出的文件 - 发布端模式)
+                for (const f of diff.delRemote) {
+                    this._log(task.id, `请求删除远端多余文件: ${f.name}`);
+                    this._sendJson(TYPE.SYNC_DELETE_REQ, { shareId: task.shareId, entryName: entry.name, fileName: f.name }, 1);
+                }
             }
         } catch (e) {
             syncLogger.error(`runSync Error [${task.name}]:`, e);
@@ -193,23 +211,42 @@ class FileSyncService extends EventEmitter {
     }
 
     _computeDiff(local, remote, direction) {
-        const push = [], pull = [];
+        const push = [], pull = [], delLocal = [], delRemote = [];
         const localMap = new Map(local.map(f => [f.name, f]));
         const remoteMap = new Map(remote.map(f => [f.name, f]));
 
-        if (direction === 'localToRemote' || direction === 'both') {
+        if (direction === 'localToRemote') {
+            // 我有的，你没用，推给你
             for (const lf of local) {
                 const rf = remoteMap.get(lf.name);
                 if (!rf || (lf.mtime > rf.mtime && Math.abs(lf.mtime - rf.mtime) > 2000)) push.push(lf);
             }
-        }
-        if (direction === 'remoteToLocal' || direction === 'both') {
+            // 你有的，我没有，删了你
+            for (const rf of remote) {
+                if (!localMap.has(rf.name)) delRemote.push(rf);
+            }
+        } else if (direction === 'remoteToLocal') {
+            // 你有的，我没有，拉回来
+            for (const rf of remote) {
+                const lf = localMap.get(rf.name);
+                if (!lf || (rf.mtime > lf.mtime && Math.abs(rf.mtime - lf.mtime) > 2000)) pull.push(rf);
+            }
+            // 我有的，你没有，删了它
+            for (const lf of local) {
+                if (!remoteMap.has(lf.name)) delLocal.push(lf);
+            }
+        } else if (direction === 'both') {
+            // 双向模式：仅做合并，不执行自动删除
+            for (const lf of local) {
+                const rf = remoteMap.get(lf.name);
+                if (!rf || (lf.mtime > rf.mtime && Math.abs(lf.mtime - rf.mtime) > 2000)) push.push(lf);
+            }
             for (const rf of remote) {
                 const lf = localMap.get(rf.name);
                 if (!lf || (rf.mtime > lf.mtime && Math.abs(rf.mtime - lf.mtime) > 2000)) pull.push(rf);
             }
         }
-        return { push, pull };
+        return { push, pull, delLocal, delRemote };
     }
 
     async _getRemoteList(shareId) {
@@ -255,11 +292,28 @@ class FileSyncService extends EventEmitter {
         }
     }
 
+    _handleDeleteReq(frame) {
+        const req = JSON.parse(frame.body.toString());
+        const task = Array.from(this.tasks.values()).find(t => t.shareId.toLowerCase() === req.shareId.toLowerCase() && t.enabled);
+        if (!task || task.direction === 'remoteToLocal') return; // 防护：只有当你是发布端(或Both)才允许被动删除
+
+        const entry = task.entries.find(e => e.name === req.entryName);
+        if (!entry) return;
+
+        const realLocalPath = resolvePath(entry.localPath);
+        const fullPath = fs.statSync(realLocalPath).isFile() ? realLocalPath : path.join(realLocalPath, req.fileName);
+        if (fs.existsSync(fullPath)) {
+            syncLogger.info(`Remote requested deletion: ${fullPath}`);
+            try { fs.unlinkSync(fullPath); } catch (e) { }
+        }
+    }
+
     handleFrame(frame) {
         switch (frame.type) {
             case TYPE.SYNC_LIST_REQ: this._handleListReq(frame); break;
             case TYPE.SYNC_LIST_RESP: this._handleListResp(frame); break;
             case TYPE.SYNC_PULL_REQ: this._handlePullReq(frame); break;
+            case TYPE.SYNC_DELETE_REQ: this._handleDeleteReq(frame); break;
             case TYPE.SYNC_SHARES_QUERY: this._handleSharesQuery(frame); break;
             case TYPE.SYNC_SHARES_ANNOUNCE: this._handleSharesAnnounce(frame); break;
         }

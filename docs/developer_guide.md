@@ -6,7 +6,7 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.5 (Unified IM & File Transfer)
+**当前版本**: v2.7 (File Sync & Unified IM)
 
 ### 已完成功能 (Phase 1-4)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
@@ -112,6 +112,11 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2026-01-29 (v2.7) - File Sync Path & Deletion Fixes**
+*   **Path Resolution**: 引入 `pathUtils.js` 工具类，支持家目录 symbol (~) 解析及全量绝对路径支持，解决了文件同步错误落入程序根目录的 Bug。
+*   **Deletion Sync**: 实现了单向同步模式（`remoteToLocal`/`localToRemote`）下的删除同步。支持重命名自动清理及 `SYNC_DELETE_REQ` 远程删除，确保两端目录 1:1 严格镜像。
+*   **Infrastructure**: 新增 `0x40-0x45` File Sync 系列协议指令，增强了同步逻辑的健壮性。
 
 **2026-01-28 (v2.6) - UI Layout & Dev Ops Optimization**
 *   **UI Layout**: 将界面调整为 50/50 分屏，聊天与工具区视野平行；Logo 替换为 `Cpu` 图标。
