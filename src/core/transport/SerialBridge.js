@@ -177,7 +177,8 @@ class SerialBridge extends EventEmitter {
             // 强联动逻辑：
             // 如果当前是断开状态，但新配置要求"自动重连"，则立即尝试连接。
             // 这覆盖了之前可能的手动 disconnect 状态。
-            if (!this.isConnected && this.currentConfig.autoReconnect && this.currentConfig.path) {
+            const targetPath = this.currentConfig.path || this.currentConfig.port;
+            if (!this.isConnected && this.currentConfig.autoReconnect && targetPath) {
                 bridgeLogger.info('[串口] 配置保存触发自动连接...');
                 this.emit('status-message', '配置保存触发自动连接...');
                 this.shouldAutoReconnect = true;

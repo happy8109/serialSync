@@ -10,8 +10,7 @@
     "reconnectInterval": 3000,
     "maxReconnectAttempts": 0,
     "heartbeatInterval": 5000,
-    "heartbeatTimeout": 15000,
-    "path": "COM4"
+    "heartbeatTimeout": 15000
   },
   "transfer": {
     "chunkSize": 2048,
