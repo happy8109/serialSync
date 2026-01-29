@@ -51,7 +51,7 @@
         "name": "每日简报",
         "description": "获取每日统计简报",
         "version": "1.0",
-        "endpoint": "http://localhost:3000/api/stats/daily/brief",
+        "endpoint": "http://localhost:3003/api/stats/daily/brief",
         "method": "GET",
         "timeout": 10000,
         "enabled": true,
@@ -64,7 +64,7 @@
     "port": 3000
   },
   "web": {
-    "port": 5174
+    "port": 5173
   },
   "syncTasks": []
 }

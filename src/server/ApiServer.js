@@ -15,7 +15,10 @@ const AppController = require('../core/interface/AppController');
 const { logger } = require('../utils/logger');
 
 class ApiServer {
-    constructor(port = 3000) {
+    constructor(port) {
+        if (!port) {
+            throw new Error('ApiServer: Port is required');
+        }
         this.port = port;
         this.app = express();
         this.server = http.createServer(this.app);

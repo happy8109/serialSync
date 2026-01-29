@@ -31,10 +31,10 @@ try {
 const serialPort = args[0] || (fileConfig.serial && fileConfig.serial.port) || 'COM3';
 
 // 2. API 服务端口
-const apiPort = args[1] || (fileConfig.server && fileConfig.server.port) || '3000';
+const apiPort = args[1] || (fileConfig.server && fileConfig.server.port) || 3000;
 
 // 3. Web UI 端口
-const webPort = args[2] || (fileConfig.web && fileConfig.web.port) || '5173';
+const webPort = args[2] || (fileConfig.web && fileConfig.web.port) || 5173;
 
 const projectRoot = path.resolve(__dirname, '..');
 const serverScript = path.join(projectRoot, 'src', 'server', 'index.js');
