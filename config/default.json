@@ -1,6 +1,6 @@
 {
   "serial": {
-    "port": "COM4",
+    "port": "COM3",
     "baudRate": 115200,
     "dataBits": 8,
     "stopBits": 1,
@@ -10,7 +10,8 @@
     "reconnectInterval": 3000,
     "maxReconnectAttempts": 0,
     "heartbeatInterval": 5000,
-    "heartbeatTimeout": 15000
+    "heartbeatTimeout": 15000,
+    "path": "COM3"
   },
   "transfer": {
     "chunkSize": 2048,
@@ -65,5 +66,21 @@
   "web": {
     "port": 5173
   },
-  "syncTasks": []
+  "syncTasks": [
+    {
+      "id": "task_1769660604398",
+      "name": "test",
+      "description": "测试",
+      "shareId": "CTR0YWN6",
+      "frequency": "1m",
+      "direction": "localToRemote",
+      "enabled": true,
+      "entries": [
+        {
+          "name": "Default",
+          "localPath": "C:\\Users\\Office\\Desktop\\test"
+        }
+      ]
+    }
+  ]
 }

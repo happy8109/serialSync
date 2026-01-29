@@ -8,6 +8,7 @@ const EventEmitter = require('events');
 const fs = require('fs');
 const path = require('path');
 const { logger } = require('../../utils/logger');
+const { resolvePath } = require('../../utils/pathUtils');
 
 const syncLogger = logger.create('FileSync');
 
@@ -72,10 +73,11 @@ class FileSyncService extends EventEmitter {
         if (!entry || !entry.localPath) return;
 
         // 计算物理落地路径
-        let targetDir = entry.localPath;
+        // 核心修复：确保落地路径是经过解析的绝对路径
+        let targetDir = resolvePath(entry.localPath);
         try {
-            if (fs.existsSync(entry.localPath) && fs.statSync(entry.localPath).isFile()) {
-                targetDir = path.dirname(entry.localPath);
+            if (fs.existsSync(targetDir) && fs.statSync(targetDir).isFile()) {
+                targetDir = path.dirname(targetDir);
             }
         } catch (e) { }
 
@@ -133,8 +135,9 @@ class FileSyncService extends EventEmitter {
             // 扫描本地
             const localState = {};
             for (const entry of task.entries) {
-                if (fs.existsSync(entry.localPath)) {
-                    localState[entry.name] = this._scanDir(entry.localPath);
+                const realLocalPath = resolvePath(entry.localPath);
+                if (fs.existsSync(realLocalPath)) {
+                    localState[entry.name] = this._scanDir(realLocalPath);
                 }
             }
 
@@ -149,7 +152,8 @@ class FileSyncService extends EventEmitter {
 
                 // Push
                 for (const f of diff.push) {
-                    const fullPath = fs.statSync(entry.localPath).isFile() ? entry.localPath : path.join(entry.localPath, f.name);
+                    const realLocalPath = resolvePath(entry.localPath);
+                    const fullPath = fs.statSync(realLocalPath).isFile() ? realLocalPath : path.join(realLocalPath, f.name);
                     this._log(task.id, `推送更新: ${f.name}`);
                     await this.fileTransferService.sendFile(fullPath, 3, { shareId: task.shareId, entryName: entry.name, isHidden: true });
                 }
@@ -223,7 +227,10 @@ class FileSyncService extends EventEmitter {
         if (!task) return this._sendJson(TYPE.SYNC_LIST_RESP, { qid: req.qid, error: 'Denied' }, 1);
 
         const res = {};
-        for (const entry of task.entries) res[entry.name] = this._scanDir(entry.localPath);
+        for (const entry of task.entries) {
+            const realLocalPath = resolvePath(entry.localPath);
+            res[entry.name] = this._scanDir(realLocalPath);
+        }
         this._sendJson(TYPE.SYNC_LIST_RESP, { qid: req.qid, entries: res }, 1);
     }
 
@@ -241,7 +248,8 @@ class FileSyncService extends EventEmitter {
         const entry = task.entries.find(e => e.name === req.entryName);
         if (!entry) return;
 
-        const fullPath = fs.statSync(entry.localPath).isFile() ? entry.localPath : path.join(entry.localPath, req.fileName);
+        const realLocalPath = resolvePath(entry.localPath);
+        const fullPath = fs.statSync(realLocalPath).isFile() ? realLocalPath : path.join(realLocalPath, req.fileName);
         if (fs.existsSync(fullPath)) {
             this.fileTransferService.sendFile(fullPath, 3, { shareId: req.shareId, entryName: req.entryName, isHidden: true });
         }
