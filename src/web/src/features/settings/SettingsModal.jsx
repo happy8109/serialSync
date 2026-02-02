@@ -6,6 +6,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
     const { port: currentPort, isConnected } = useAppStore();
     const [ports, setPorts] = useState([]);
     const [loading, setLoading] = useState(false);
+    const [baudRateOptions, setBaudRateOptions] = useState([9600, 19200, 38400, 57600, 115200, 128000, 230400, 460800, 576000, 921600]);
 
     const [serialConfig, setSerialConfig] = useState({
         path: currentPort || '',
@@ -67,6 +68,11 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 reconnectInterval: serialVals.reconnectInterval || 3000,
                 maxReconnectAttempts: serialVals.maxReconnectAttempts || 0 // 0 means infinite
             }));
+
+            // 读取可配置的波特率选项
+            if (serialVals.baudRateOptions && Array.isArray(serialVals.baudRateOptions)) {
+                setBaudRateOptions(serialVals.baudRateOptions);
+            }
 
             // 2. Transfer Config
             const transferVals = cfg.transfer || data.transferConfig || {};
@@ -309,15 +315,9 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                             onChange={(e) => setSerialConfig({ ...serialConfig, baudRate: e.target.value })}
                                             className="w-full px-3 py-2 rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary text-sm"
                                         >
-                                            <option value="9600">9600</option>
-                                            <option value="19200">19200</option>
-                                            <option value="38400">38400</option>
-                                            <option value="57600">57600</option>
-                                            <option value="115200">115200</option>
-                                            <option value="230400">230400</option>
-                                            <option value="460800">460800</option>
-                                            <option value="576000">576000</option>
-                                            <option value="921600">921600</option>
+                                            {baudRateOptions.map((rate) => (
+                                                <option key={rate} value={rate.toString()}>{rate}</option>
+                                            ))}
                                         </select>
                                     </div>
 
