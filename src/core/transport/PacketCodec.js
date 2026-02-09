@@ -1,7 +1,10 @@
 /**
  * PacketCodec.js
  * 负责协议帧的编解码、COBS 转义与 CRC 校验
- * Protocol v2.1
+ * Protocol v3.1 - 支持链路层 ARQ (FSeq/FAck 追加在帧尾)
+ * 
+ * 帧结构: Type(1) + Seq(4) + Len(2) + Body(N) + FSeq(2) + FAck(2) + CRC(2)
+ *         前 7+N 字节与 v2.1 兼容
  */
 
 class PacketCodec {
@@ -94,30 +97,34 @@ class PacketCodec {
 
     /**
      * 封装帧 (Raw Frame -> CRC -> COBS -> +0x00)
-     * @param {number} type 
-     * @param {number} seq 
-     * @param {Buffer|string} body 
+     * v3.1 帧结构: Type(1) + Seq(4) + Len(2) + Body(N) + FSeq(2) + FAck(2) + CRC(2)
+     * @param {number} type 帧类型
+     * @param {number} seq 应用层序号
+     * @param {Buffer|string} body 帧体
+     * @param {number} fSeq 链路帧序号 (0-65535)
+     * @param {number} fAck 捎带确认号 (0-65535)
      * @returns {Buffer}
      */
-    static encode(type, seq, body = Buffer.alloc(0)) {
+    static encode(type, seq, body = Buffer.alloc(0), fSeq = 0, fAck = 0) {
         if (typeof body === 'string') {
             body = Buffer.from(body, 'utf8');
         } else if (!Buffer.isBuffer(body)) {
             body = Buffer.alloc(0);
         }
 
-        // 1. 构建 Raw Frame (Type + Seq + Len + Body)
-        // TYPE(1) + SEQ(4) + LEN(2) + BODY(N)  -- SEQ 升级为 4 字节以支持大文件
-        const rawLen = 1 + 4 + 2 + body.length;
+        // 1. 构建 Raw Frame: Type(1) + Seq(4) + Len(2) + Body(N) + FSeq(2) + FAck(2)
+        const rawLen = 1 + 4 + 2 + body.length + 2 + 2;
         const raw = Buffer.alloc(rawLen);
 
         let offset = 0;
-        raw.writeUInt8(type, offset++);
-        raw.writeUInt32BE(seq, offset); offset += 4;  // 改为 4 字节
-        raw.writeUInt16BE(body.length, offset); offset += 2;
-        body.copy(raw, offset);
+        raw.writeUInt8(type, offset++);                      // Type
+        raw.writeUInt32BE(seq, offset); offset += 4;         // Seq (4字节，与 v2.1 相同位置)
+        raw.writeUInt16BE(body.length, offset); offset += 2; // Len (与 v2.1 相同位置)
+        body.copy(raw, offset); offset += body.length;       // Body
+        raw.writeUInt16BE(fSeq & 0xFFFF, offset); offset += 2; // FSeq (新增，帧尾)
+        raw.writeUInt16BE(fAck & 0xFFFF, offset);              // FAck (新增，帧尾)
 
-        // 2. 计算 CRC (Type + Seq + Len + Body)
+        // 2. 计算 CRC (整个 Raw Frame)
         const crc = this.crc16(raw);
 
         // 3. 拼接 CRC
@@ -132,19 +139,20 @@ class PacketCodec {
 
     /**
      * 解析帧 (COBS Data -> Decode -> Check CRC -> Extract)
+     * v3.1 帧结构: Type(1) + Seq(4) + Len(2) + Body(N) + FSeq(2) + FAck(2) + CRC(2)
      * @param {Buffer} buffer COBS 编码的数据（不含末尾的 0x00）
-     * @returns {Object} { type, seq, body }
+     * @returns {Object} { type, seq, body, fSeq, fAck }
      */
     static decode(buffer) {
         // 1. COBS 解码
         const decoded = this.cobsDecode(buffer);
 
-        // 2. 长度检查 (Type(1) + Seq(4) + Len(2) + CRC(2) = 9 bytes min)
-        if (decoded.length < 9) {
+        // 2. 长度检查 (v3.1: Type(1) + Seq(4) + Len(2) + FSeq(2) + FAck(2) + CRC(2) = 13 bytes min)
+        if (decoded.length < 13) {
             throw new Error('Frame too short');
         }
 
-        // 3. 提取 CRC
+        // 3. 提取 CRC (最后 2 字节)
         const receivedCrc = decoded.readUInt16BE(decoded.length - 2);
         const dataPayload = decoded.slice(0, decoded.length - 2);
 
@@ -156,17 +164,23 @@ class PacketCodec {
 
         // 5. 解析字段
         let offset = 0;
-        const type = dataPayload.readUInt8(offset++);
-        const seq = dataPayload.readUInt32BE(offset); offset += 4;  // 改为 4 字节
-        const len = dataPayload.readUInt16BE(offset); offset += 2;
+        const type = dataPayload.readUInt8(offset++);                    // Type
+        const seq = dataPayload.readUInt32BE(offset); offset += 4;       // Seq
+        const len = dataPayload.readUInt16BE(offset); offset += 2;       // Len
 
-        if (dataPayload.length - offset !== len) {
-            throw new Error(`Length Mismatch: header says ${len}, actual body is ${dataPayload.length - offset}`);
+        // Body 长度校验: dataPayload 总长 - 已解析的头部(7) - 尾部 FSeq(2) + FAck(2) = Body 长度
+        const expectedBodyLen = dataPayload.length - 7 - 4;
+        if (len !== expectedBodyLen) {
+            throw new Error(`Length Mismatch: header says ${len}, actual body is ${expectedBodyLen}`);
         }
 
-        const body = dataPayload.slice(offset);
+        const body = dataPayload.slice(offset, offset + len); offset += len;
 
-        return { type, seq, body };
+        // 6. 提取 FSeq 和 FAck (帧尾)
+        const fSeq = dataPayload.readUInt16BE(offset); offset += 2;
+        const fAck = dataPayload.readUInt16BE(offset);
+
+        return { type, seq, body, fSeq, fAck };
     }
 }
 

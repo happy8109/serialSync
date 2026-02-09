@@ -1,11 +1,13 @@
 /**
  * SerialBridge.js
  * 链路层核心：负责串口连接、流处理、COBS帧同步与流控
+ * v3.1 - 集成 ARQ 可靠传输层
  */
 
 const { SerialPort } = require('serialport');
 const EventEmitter = require('events');
 const PacketCodec = require('./PacketCodec');
+const ReliableLink = require('./ReliableLink');
 const { logger } = require('../../utils/logger');
 const bridgeLogger = logger.create('Bridge');
 
@@ -36,6 +38,18 @@ class SerialBridge extends EventEmitter {
             crcErrors: 0,
             resyncs: 0
         };
+
+        // ARQ 配置
+        this.enableARQ = options.enableARQ !== false; // 默认启用
+        this.reliableLink = null; // 延迟初始化
+
+        // 初始化 ARQ 层
+        if (this.enableARQ) {
+            this.reliableLink = new ReliableLink(this, options.arqConfig);
+            // 转发可靠层的帧事件到上层
+            this.reliableLink.on('frame', (frame) => this.emit('frame', frame));
+            this.reliableLink.on('transmit_failed', (info) => this.emit('transmit_failed', info));
+        }
     }
 
     /**
@@ -229,20 +243,22 @@ class SerialBridge extends EventEmitter {
     sendFrame(type, seq, body) {
         if (!this.isConnected) throw new Error('SerialPort not connected');
 
-        // 1. 封装帧 (含 CRC + COBS + 0x00)
-        const packet = PacketCodec.encode(type, seq, body);
+        // 如果启用了 ARQ，委托给 ReliableLink
+        if (this.enableARQ && this.reliableLink) {
+            this.reliableLink.send(type, seq, body);
+            return true; // ARQ 模式下始终返回 true，背压由底层处理
+        }
 
-        // 2. 写入串口
+        // 直接发送模式 (ARQ 禁用)
+        const packet = PacketCodec.encode(type, seq, body);
         const notCongested = this.port.write(packet);
 
-        // 3. 更新统计
         this.stats.txBytes += packet.length;
         this.stats.txFrames++;
 
-        // 4. 处理背压
         if (!notCongested) {
             this.isCongested = true;
-            this.emit('pause'); // 通知调度器暂停
+            this.emit('pause');
         }
 
         return notCongested;
@@ -292,7 +308,6 @@ class SerialBridge extends EventEmitter {
      * 内部：处理接收流 (COBS Frame Splitting)
      */
     _handleData(chunk) {
-        // 调试日志：记录接收到的数据长度，帮助确认硬件层面是否有信号进来
         if (chunk.length > 0) {
             bridgeLogger.debug(`[串口] 接收到原始数据: ${chunk.length} 字节`);
         }
@@ -300,35 +315,39 @@ class SerialBridge extends EventEmitter {
 
         let offset = 0;
         while (offset < this.buffer.length) {
-            // 寻找帧定界符 0x00
             const delimiterIndex = this.buffer.indexOf(0x00, offset);
 
             if (delimiterIndex === -1) {
-                // 没找到 0x00，说明帧不完整，等待更多数据
                 break;
             }
 
-            // 提取完整的一帧 (COBS Encoded Data)
             const frameBuffer = this.buffer.slice(offset, delimiterIndex);
-            offset = delimiterIndex + 1; // 跳过 0x00
+            offset = delimiterIndex + 1;
 
-            if (frameBuffer.length === 0) continue; // 忽略连续的 0x00
+            if (frameBuffer.length === 0) continue;
 
             try {
-                // 解码并校验
                 const frame = PacketCodec.decode(frameBuffer);
                 this.stats.rxFrames++;
-                this.emit('frame', frame);
+
+                // 根据 ARQ 模式处理帧
+                if (this.enableARQ && this.reliableLink) {
+                    // 纯 ACK 帧 (Type=0xFF) 不向上层转发
+                    if (frame.type === 0xFF) {
+                        this.reliableLink._onFrame(frame);
+                    } else {
+                        this.reliableLink._onFrame(frame);
+                    }
+                } else {
+                    // 直接模式: 直接向上层发送帧
+                    this.emit('frame', frame);
+                }
             } catch (err) {
-                // 校验失败或解码失败
                 this.stats.crcErrors++;
-                // logger.warn('Frame Error:', err.message);
-                // COBS 的特性是：一旦出错，直接丢弃，下一个 0x00 会自动同步
-                // 所以这里不需要做额外的 Resync 操作，只需要记录错误
+                bridgeLogger.warn(`[串口] 帧解码失败: ${err.message}`);
             }
         }
 
-        // 清理已处理的数据
         if (offset > 0) {
             this.buffer = this.buffer.slice(offset);
         }
@@ -339,6 +358,11 @@ class SerialBridge extends EventEmitter {
         this.isCongested = false;
         this.port = null;
         this.buffer = Buffer.alloc(0);
+
+        // 重置 ARQ 状态
+        if (this.reliableLink) {
+            this.reliableLink.reset();
+        }
     }
 }
 
