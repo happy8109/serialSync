@@ -29,6 +29,11 @@ class SerialBridge extends EventEmitter {
         this.shouldAutoReconnect = false; // 用户主动断开时不重连
         this.lastPath = null; // 记住上次连接的路径
 
+        // 链路就绪标志（连接后延迟一段时间再允许发帧）
+        this.linkReady = false;
+        this.linkReadyDelay = options.linkReadyDelay || 2000; // 默认 2秒
+        this.linkReadyTimer = null;
+
         // 统计信息
         this.stats = {
             rxBytes: 0,
@@ -111,6 +116,16 @@ class SerialBridge extends EventEmitter {
                 this.isConnected = true;
                 this.reconnectAttempts = 0;
                 this._setupListeners();
+
+                // 链路就绪延迟: 等待对端也完成启动
+                this.linkReady = false;
+                bridgeLogger.info(`[串口] 链路就绪延迟 ${this.linkReadyDelay}ms...`);
+                this.linkReadyTimer = setTimeout(() => {
+                    this.linkReady = true;
+                    bridgeLogger.info(`[串口] 链路已就绪，允许发送帧`);
+                    this.emit('linkReady');
+                }, this.linkReadyDelay);
+
                 this.emit('open');
                 resolve();
             });
@@ -243,6 +258,12 @@ class SerialBridge extends EventEmitter {
     sendFrame(type, seq, body) {
         if (!this.isConnected) throw new Error('SerialPort not connected');
 
+        // 链路就绪检查: 连接初期延迟发送，等待对端就绪
+        if (!this.linkReady) {
+            bridgeLogger.info(`[串口] 链路未就绪，丢弃帧 type=0x${type.toString(16)}`);
+            return true; // 返回 true 避免触发背压
+        }
+
         // 如果启用了 ARQ，委托给 ReliableLink
         if (this.enableARQ && this.reliableLink) {
             this.reliableLink.send(type, seq, body);
@@ -309,7 +330,7 @@ class SerialBridge extends EventEmitter {
      */
     _handleData(chunk) {
         if (chunk.length > 0) {
-            bridgeLogger.debug(`[串口] 接收到原始数据: ${chunk.length} 字节`);
+            bridgeLogger.info(`[串口] 接收原始数据: ${chunk.length} 字节`);
         }
         this.buffer = Buffer.concat([this.buffer, chunk]);
 
@@ -329,15 +350,11 @@ class SerialBridge extends EventEmitter {
             try {
                 const frame = PacketCodec.decode(frameBuffer);
                 this.stats.rxFrames++;
+                bridgeLogger.info(`[串口] 解码成功: type=0x${frame.type.toString(16)}, fSeq=${frame.fSeq}, fAck=${frame.fAck}, bodyLen=${frame.body.length}`);
 
                 // 根据 ARQ 模式处理帧
                 if (this.enableARQ && this.reliableLink) {
-                    // 纯 ACK 帧 (Type=0xFF) 不向上层转发
-                    if (frame.type === 0xFF) {
-                        this.reliableLink._onFrame(frame);
-                    } else {
-                        this.reliableLink._onFrame(frame);
-                    }
+                    this.reliableLink._onFrame(frame);
                 } else {
                     // 直接模式: 直接向上层发送帧
                     this.emit('frame', frame);
@@ -356,8 +373,15 @@ class SerialBridge extends EventEmitter {
     _cleanup() {
         this.isConnected = false;
         this.isCongested = false;
+        this.linkReady = false;
         this.port = null;
         this.buffer = Buffer.alloc(0);
+
+        // 清理链路就绪定时器
+        if (this.linkReadyTimer) {
+            clearTimeout(this.linkReadyTimer);
+            this.linkReadyTimer = null;
+        }
 
         // 重置 ARQ 状态
         if (this.reliableLink) {

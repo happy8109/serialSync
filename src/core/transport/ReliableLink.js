@@ -6,10 +6,10 @@
  * - 发送端: 分配 FSeq，维护发送窗口，超时重传
  * - 接收端: 解析 FSeq/FAck，捎带确认，去重
  * 
- * v3.1.1 - 修复发送洪泛导致的传输卡死
- *   - 增加发送队列与帧间节流，避免瞬间塞满串口缓冲区
- *   - 重传间隔化，防止雪崩式重传
- *   - 窗口满时排队等待，而非直接丢弃
+ * v3.2 - 停等协议 + 链路诊断
+ *   - WINDOW_SIZE=1: 一帧一确认，最可靠
+ *   - 添加 info 级诊断日志，便于物理环境调试
+ *   - 支持链路就绪延迟 (由 SerialBridge 控制)
  */
 
 const EventEmitter = require('events');
@@ -17,14 +17,14 @@ const PacketCodec = require('./PacketCodec');
 const { logger } = require('../../utils/logger');
 const linkLogger = logger.create('ReliableLink');
 
-// 默认配置 (基于 115200 波特率计算)
+// 默认配置 (停等模式，基于 115200 波特率)
 // 1 帧 ≈ 2200 字节 → 物理传输 ≈ 191ms
-// 窗口 4 帧 → 全部发完 ≈ 800ms
-// ACK 来回 ≈ 300ms，超时设 5s 留足余量
+// 停等: 发1帧 → 等ACK → 再发下1帧
+// 往返: 帧TX(191ms) + B处理(50ms) + ACK TX(50ms) ≈ 300ms
 const DEFAULT_CONFIG = {
-    WINDOW_SIZE: 4,        // 发送窗口大小 (小窗口避免洪泛)
-    ACK_TIMEOUT: 5000,     // ACK 超时时间 (ms)，留足物理传输+往返时间
-    MAX_RETRIES: 5,        // 最大重试次数
+    WINDOW_SIZE: 1,        // 停等协议: 一次只发一帧
+    ACK_TIMEOUT: 3000,     // ACK 超时时间 (ms)，停等模式下只有1帧在飞
+    MAX_RETRIES: 8,        // 最大重试次数 (增加容错)
     ACK_DELAY: 50,         // 延迟 ACK 时间 (ms)，用于捎带确认
     SEQ_MODULO: 65536,     // 序号模 (FSeq 为 2 字节)
     FRAME_INTERVAL: 200    // 帧间延时 (ms)，匹配物理传输速率
@@ -161,7 +161,7 @@ class ReliableLink extends EventEmitter {
         this.bridge.port.write(packet);
         this.stats.txFrames++;
 
-        linkLogger.debug(`TX: fSeq=${fSeq}, fAck=${fAck}, type=${type}, seq=${seq}, retries=${retries}`);
+        linkLogger.info(`TX: fSeq=${fSeq}, fAck=${fAck}, type=0x${type.toString(16)}, bodyLen=${body.length}, retries=${retries}`);
     }
 
     /**
@@ -171,7 +171,7 @@ class ReliableLink extends EventEmitter {
     _onFrame(frame) {
         const { type, seq, body, fSeq, fAck } = frame;
 
-        linkLogger.debug(`RX: fSeq=${fSeq}, fAck=${fAck}, type=${type}, seq=${seq}`);
+        linkLogger.info(`RX: fSeq=${fSeq}, fAck=${fAck}, type=0x${type.toString(16)}, bodyLen=${body.length}`);
 
         // 1. 处理对方的 ACK (释放已确认的帧)
         this._processAck(fAck);
@@ -286,7 +286,7 @@ class ReliableLink extends EventEmitter {
         this.bridge.port.write(packet);
         this.stats.acksSent++;
 
-        linkLogger.debug(`发送 ACK: fAck=${this.recvAck}`);
+        linkLogger.info(`发送 ACK: fAck=${this.recvAck}`);
     }
 
     /**
