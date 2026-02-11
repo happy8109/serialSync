@@ -5,6 +5,11 @@
  * 职责:
  * - 发送端: 分配 FSeq，维护发送窗口，超时重传
  * - 接收端: 解析 FSeq/FAck，捎带确认，去重
+ * 
+ * v3.1.1 - 修复发送洪泛导致的传输卡死
+ *   - 增加发送队列与帧间节流，避免瞬间塞满串口缓冲区
+ *   - 重传间隔化，防止雪崩式重传
+ *   - 窗口满时排队等待，而非直接丢弃
  */
 
 const EventEmitter = require('events');
@@ -15,10 +20,11 @@ const linkLogger = logger.create('ReliableLink');
 // 默认配置
 const DEFAULT_CONFIG = {
     WINDOW_SIZE: 16,       // 发送窗口大小
-    ACK_TIMEOUT: 500,      // ACK 超时时间 (ms)
+    ACK_TIMEOUT: 1500,     // ACK 超时时间 (ms)，留出充足物理传输时间
     MAX_RETRIES: 5,        // 最大重试次数
     ACK_DELAY: 50,         // 延迟 ACK 时间 (ms)，用于捎带确认
-    SEQ_MODULO: 65536      // 序号模 (FSeq 为 2 字节)
+    SEQ_MODULO: 65536,     // 序号模 (FSeq 为 2 字节)
+    FRAME_INTERVAL: 20     // 帧间延时 (ms)，避免写入洪泛
 };
 
 class ReliableLink extends EventEmitter {
@@ -35,6 +41,14 @@ class ReliableLink extends EventEmitter {
         this.sendSeq = 0;           // 下一个要发送的 FSeq
         this.sendBase = 0;          // 滑动窗口基址（最早未确认的 FSeq）
         this.sendWindow = new Map(); // FSeq -> { packet, type, seq, body, retries, timer }
+
+        // 发送队列 & 节流
+        this.txQueue = [];          // 待发送帧队列 [{ type, seq, body, fSeq, retries }]
+        this.txDraining = false;    // 是否正在逐帧发送
+        this.txDrainTimer = null;   // 逐帧发送定时器
+
+        // 待发送缓冲（窗口满时暂存）
+        this.pendingQueue = [];     // [{ type, seq, body }]
 
         // 接收端状态
         this.expectSeq = 0;         // 期望收到的下一个 FSeq
@@ -57,19 +71,60 @@ class ReliableLink extends EventEmitter {
      * @param {Buffer} body 帧体
      */
     send(type, seq, body) {
-        const fSeq = this.sendSeq;
-        this.sendSeq = (this.sendSeq + 1) % this.config.SEQ_MODULO;
-
         // 检查窗口是否已满
         if (this.sendWindow.size >= this.config.WINDOW_SIZE) {
-            linkLogger.warn(`发送窗口已满 (size=${this.sendWindow.size})，等待 ACK`);
-            // TODO: 可以实现队列机制，暂时丢弃
+            linkLogger.warn(`发送窗口已满 (size=${this.sendWindow.size})，加入等待队列`);
+            this.pendingQueue.push({ type, seq, body });
             return false;
         }
 
-        // 创建并发送数据包
-        this._transmit(type, seq, body, fSeq, 0);
+        const fSeq = this.sendSeq;
+        this.sendSeq = (this.sendSeq + 1) % this.config.SEQ_MODULO;
+
+        // 加入发送队列，节流发送
+        this._enqueue(type, seq, body, fSeq, 0);
         return true;
+    }
+
+    /**
+     * 将帧加入发送队列
+     */
+    _enqueue(type, seq, body, fSeq, retries) {
+        this.txQueue.push({ type, seq, body, fSeq, retries });
+        this._startDrain();
+    }
+
+    /**
+     * 启动逐帧发送（节流）
+     */
+    _startDrain() {
+        if (this.txDraining) return;
+        this.txDraining = true;
+        this._drainNext();
+    }
+
+    /**
+     * 发送队列中的下一帧
+     */
+    _drainNext() {
+        if (this.txQueue.length === 0) {
+            this.txDraining = false;
+            this.txDrainTimer = null;
+            return;
+        }
+
+        const item = this.txQueue.shift();
+        this._transmit(item.type, item.seq, item.body, item.fSeq, item.retries);
+
+        // 如果队列还有帧，延后发送下一帧
+        if (this.txQueue.length > 0) {
+            this.txDrainTimer = setTimeout(() => {
+                this._drainNext();
+            }, this.config.FRAME_INTERVAL);
+        } else {
+            this.txDraining = false;
+            this.txDrainTimer = null;
+        }
     }
 
     /**
@@ -118,7 +173,11 @@ class ReliableLink extends EventEmitter {
         // 1. 处理对方的 ACK (释放已确认的帧)
         this._processAck(fAck);
 
-        // 2. 处理数据帧
+        // 2. 纯 ACK 帧 (type=0xFF) 只需处理 fAck，不作为数据帧处理
+        //    否则会触发 _scheduleAck → 对方收到后又 _scheduleAck → 无限循环
+        if (type === 0xFF) return;
+
+        // 3. 处理数据帧
         this._handleDataFrame(frame);
     }
 
@@ -128,13 +187,32 @@ class ReliableLink extends EventEmitter {
     _processAck(fAck) {
         // fAck 表示对方期望收到的下一帧，即 fAck-1 及之前的帧都已收到
         // 累积确认：释放所有 FSeq < fAck 的帧
+        let released = 0;
         for (const [storedFSeq, entry] of this.sendWindow) {
             // 考虑序号回绕
             if (this._seqLt(storedFSeq, fAck)) {
                 clearTimeout(entry.timer);
                 this.sendWindow.delete(storedFSeq);
+                released++;
                 linkLogger.debug(`ACK 确认 fSeq=${storedFSeq}`);
             }
+        }
+
+        // 如果释放了窗口空间，尝试发送等待队列中的帧
+        if (released > 0) {
+            this._flushPending();
+        }
+    }
+
+    /**
+     * 将等待队列中的帧移入发送窗口
+     */
+    _flushPending() {
+        while (this.pendingQueue.length > 0 && this.sendWindow.size < this.config.WINDOW_SIZE) {
+            const pending = this.pendingQueue.shift();
+            const fSeq = this.sendSeq;
+            this.sendSeq = (this.sendSeq + 1) % this.config.SEQ_MODULO;
+            this._enqueue(pending.type, pending.seq, pending.body, fSeq, 0);
         }
     }
 
@@ -222,10 +300,16 @@ class ReliableLink extends EventEmitter {
             return;
         }
 
-        // 重传
+        // 重传：通过发送队列节流，避免同时重传所有帧导致洪泛
         linkLogger.warn(`重传 fSeq=${fSeq}, 第 ${entry.retries + 1} 次`);
         this.stats.retransmits++;
-        this._transmit(entry.type, entry.seq, entry.body, fSeq, entry.retries + 1);
+
+        // 先从窗口中移除旧条目（_transmit 会重新加入）
+        clearTimeout(entry.timer);
+        this.sendWindow.delete(fSeq);
+
+        // 加入发送队列，间隔发送
+        this._enqueue(entry.type, entry.seq, entry.body, fSeq, entry.retries + 1);
     }
 
     /**
@@ -249,11 +333,18 @@ class ReliableLink extends EventEmitter {
             clearTimeout(this.ackTimer);
             this.ackTimer = null;
         }
+        if (this.txDrainTimer) {
+            clearTimeout(this.txDrainTimer);
+            this.txDrainTimer = null;
+        }
 
         // 重置状态
         this.sendSeq = 0;
         this.sendBase = 0;
         this.sendWindow.clear();
+        this.txQueue = [];
+        this.txDraining = false;
+        this.pendingQueue = [];
         this.expectSeq = 0;
         this.recvAck = 0;
 
@@ -267,6 +358,8 @@ class ReliableLink extends EventEmitter {
         return {
             ...this.stats,
             windowSize: this.sendWindow.size,
+            txQueueSize: this.txQueue.length,
+            pendingQueueSize: this.pendingQueue.length,
             sendSeq: this.sendSeq,
             expectSeq: this.expectSeq
         };

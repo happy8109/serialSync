@@ -1,7 +1,7 @@
 {
   "serial": {
-    "port": "COM4",
-    "baudRate": 128000,
+    "port": "COM3",
+    "baudRate": 115200,
     "baudRateOptions": [
       9600,
       19200,
@@ -22,7 +22,8 @@
     "reconnectInterval": 3000,
     "maxReconnectAttempts": 0,
     "heartbeatInterval": 5000,
-    "heartbeatTimeout": 15000
+    "heartbeatTimeout": 15000,
+    "path": "COM3"
   },
   "transfer": {
     "chunkSize": 2048,
@@ -85,7 +86,7 @@
       "shareId": "CTR0YWN6",
       "frequency": "1m",
       "direction": "localToRemote",
-      "enabled": true,
+      "enabled": false,
       "entries": [
         {
           "name": "Default",

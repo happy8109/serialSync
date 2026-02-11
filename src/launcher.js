@@ -40,8 +40,9 @@ const projectRoot = path.resolve(__dirname, '..');
 const serverScript = path.join(projectRoot, 'src', 'server', 'index.js');
 const webDir = path.join(projectRoot, 'src', 'web');
 
+const pkgVersion = require('../package.json').version;
 console.log('==================================================');
-console.log(`SerialSync Launcher`);
+console.log(`SerialSync Launcher v${pkgVersion}`);
 console.log(`Serial Port : ${serialPort}`);
 console.log(`API Port    : ${apiPort}`);
 console.log(`Web Port    : ${webPort}`);
