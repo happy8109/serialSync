@@ -27,7 +27,8 @@ const DEFAULT_CONFIG = {
     MAX_RETRIES: 8,        // 最大重试次数 (增加容错)
     ACK_DELAY: 50,         // 延迟 ACK 时间 (ms)，用于捎带确认
     SEQ_MODULO: 65536,     // 序号模 (FSeq 为 2 字节)
-    FRAME_INTERVAL: 200    // 帧间延时 (ms)，匹配物理传输速率
+    FRAME_INTERVAL: 200,   // 帧间延时 (ms)，匹配物理传输速率
+    MAX_PENDING: 50        // 等待队列上限，防止 OOM
 };
 
 class ReliableLink extends EventEmitter {
@@ -76,7 +77,15 @@ class ReliableLink extends EventEmitter {
     send(type, seq, body) {
         // 检查窗口是否已满
         if (this.sendWindow.size >= this.config.WINDOW_SIZE) {
-            linkLogger.warn(`发送窗口已满 (size=${this.sendWindow.size})，加入等待队列`);
+            // 等待队列溢出保护: 丢弃最旧条目，防止 OOM
+            if (this.pendingQueue.length >= this.config.MAX_PENDING) {
+                this.pendingQueue.shift(); // 丢弃最旧的
+                this.stats.pendingDropped = (this.stats.pendingDropped || 0) + 1;
+                // 每100次丢弃输出一次警告
+                if (this.stats.pendingDropped % 100 === 1) {
+                    linkLogger.warn(`等待队列溢出，已丢弃 ${this.stats.pendingDropped} 条 (上限=${this.config.MAX_PENDING})`);
+                }
+            }
             this.pendingQueue.push({ type, seq, body });
             return false;
         }
@@ -161,7 +170,7 @@ class ReliableLink extends EventEmitter {
         this.bridge.port.write(packet);
         this.stats.txFrames++;
 
-        linkLogger.info(`TX: fSeq=${fSeq}, fAck=${fAck}, type=0x${type.toString(16)}, bodyLen=${body.length}, retries=${retries}`);
+        linkLogger.debug(`TX: fSeq=${fSeq}, fAck=${fAck}, type=0x${type.toString(16)}, bodyLen=${body.length}, retries=${retries}`);
     }
 
     /**
@@ -171,7 +180,7 @@ class ReliableLink extends EventEmitter {
     _onFrame(frame) {
         const { type, seq, body, fSeq, fAck } = frame;
 
-        linkLogger.info(`RX: fSeq=${fSeq}, fAck=${fAck}, type=0x${type.toString(16)}, bodyLen=${body.length}`);
+        linkLogger.debug(`RX: fSeq=${fSeq}, fAck=${fAck}, type=0x${type.toString(16)}, bodyLen=${body.length}`);
 
         // 1. 处理对方的 ACK (释放已确认的帧)
         this._processAck(fAck);
@@ -191,18 +200,20 @@ class ReliableLink extends EventEmitter {
         // fAck 表示对方期望收到的下一帧，即 fAck-1 及之前的帧都已收到
         // 累积确认：释放所有 FSeq < fAck 的帧
         let released = 0;
+        let releasedSeqs = [];
         for (const [storedFSeq, entry] of this.sendWindow) {
             // 考虑序号回绕
             if (this._seqLt(storedFSeq, fAck)) {
                 clearTimeout(entry.timer);
                 this.sendWindow.delete(storedFSeq);
                 released++;
-                linkLogger.debug(`ACK 确认 fSeq=${storedFSeq}`);
+                releasedSeqs.push(storedFSeq);
             }
         }
 
         // 如果释放了窗口空间，尝试发送等待队列中的帧
         if (released > 0) {
+            linkLogger.info(`ACK 确认释放 ${released} 帧: [${releasedSeqs.join(',')}], pending=${this.pendingQueue.length}`);
             this._flushPending();
         }
     }
@@ -286,7 +297,7 @@ class ReliableLink extends EventEmitter {
         this.bridge.port.write(packet);
         this.stats.acksSent++;
 
-        linkLogger.info(`发送 ACK: fAck=${this.recvAck}`);
+        linkLogger.debug(`发送 ACK: fAck=${this.recvAck}`);
     }
 
     /**

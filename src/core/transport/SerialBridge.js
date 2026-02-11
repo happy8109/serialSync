@@ -330,7 +330,7 @@ class SerialBridge extends EventEmitter {
      */
     _handleData(chunk) {
         if (chunk.length > 0) {
-            bridgeLogger.info(`[串口] 接收原始数据: ${chunk.length} 字节`);
+            bridgeLogger.debug(`[串口] 接收原始数据: ${chunk.length} 字节`);
         }
         this.buffer = Buffer.concat([this.buffer, chunk]);
 
@@ -350,7 +350,7 @@ class SerialBridge extends EventEmitter {
             try {
                 const frame = PacketCodec.decode(frameBuffer);
                 this.stats.rxFrames++;
-                bridgeLogger.info(`[串口] 解码成功: type=0x${frame.type.toString(16)}, fSeq=${frame.fSeq}, fAck=${frame.fAck}, bodyLen=${frame.body.length}`);
+                bridgeLogger.debug(`[串口] 解码成功: type=0x${frame.type.toString(16)}, fSeq=${frame.fSeq}, fAck=${frame.fAck}, bodyLen=${frame.body.length}`);
 
                 // 根据 ARQ 模式处理帧
                 if (this.enableARQ && this.reliableLink) {
