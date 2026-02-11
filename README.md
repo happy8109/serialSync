@@ -1,6 +1,6 @@
-# SerialSync - 串口通信与文件同步工具 (v2.5+)
+# SerialSync - 串口通信与文件同步工具 (v2.9)
 
-![Version](https://img.shields.io/badge/version-2.5.0-blue.svg)
+![Version](https://img.shields.io/badge/version-2.9.4-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-green.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20kylin-orange.svg)
 
@@ -8,7 +8,7 @@ SerialSync 是一个基于 Node.js 的现代化串口通信与文件同步工具
 
 ## ✨ 核心特性
 
-- **高可靠传输**：采用 **COBS** 衬垫编码与 **CRC-16** 校验，彻底消除粘包与数据溢出。
+- **高可靠传输**：采用 **COBS** 衬垫编码与 **CRC-16** 校验，彻底消除粘包与数据溢出。支持 **ARQ 可靠传输层** 自动重传，帧丢失率接近零。
 - **现代化 Web UI**：
   - **50/50 布局**：聊天区域与工具/同步面板等宽显示，视野更均衡。
   - **实时任务流**：四列日志展示（System, File, API, Sync），支持独立滚动与像素级对齐。
@@ -49,7 +49,7 @@ serial-sync/
 ├── docs/               # 详细手册与设计文档
 ├── scripts/            # 工具脚本 (含 clean.ps1)
 ├── src/
-│   ├── core/           # 传输协议核心 (PacketCodec, Scheduler)
+│   ├── core/           # 传输协议核心 (PacketCodec, ReliableLink, Scheduler)
 │   ├── server/         # API Server 逻辑 (Express & WebSocket)
 │   ├── web/            # React 前端代码 (Vite & TailwindCSS)
 │   └── launcher.js     # 多进程启动器

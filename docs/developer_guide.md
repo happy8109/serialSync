@@ -6,7 +6,7 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.7 (File Sync & Unified IM)
+**当前版本**: v2.9 (ARQ Reliable Transport & Performance Tuning)
 
 ### 已完成功能 (Phase 1-4)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
@@ -112,6 +112,19 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2026-02-11 (v2.9) - ARQ Performance Tuning**
+*   **OOM 修复 (v2.9.1)**: `ReliableLink.pendingQueue` 新增上限(50)防止内存泄漏，高频日志降为 debug。
+*   **滑动窗口提速 (v2.9.2)**: ARQ 窗口 `WINDOW_SIZE` 从 1 提升至 4，`FRAME_INTERVAL` 从 200ms 缩短至 50ms。
+*   **消除双层重传 (v2.9.3)**: `FileTransferService` 新增 `reliableTransport` 标志，ARQ 模式下禁用应用层 5s 数据重传，消除 fSeq 浪费（帧数减少 55%）。
+*   **进度条平滑 (v2.9.4)**: FILE_ACK 触发频率从每 25 chunk 改为每 5 chunk（新增 `ackInterval` 参数），延迟 ACK 从 500ms 缩短至 200ms。
+*   **性能提升**: 同文件传输耗时从 257s 降至 89s（-65%），速率接近 115200 波特率物理极限 (~11 KB/s)。
+
+**2026-02-08 (v2.8) - ARQ Reliable Transport Layer**
+*   **ReliableLink**: 新增链路层 ARQ 可靠传输模块，支持自动重传、序列号确认和超时管理。
+*   **链路就绪延迟**: `SerialBridge` 新增 DTR/RTS 信号检测和可配置的链路就绪延迟，防止启动阶段丢帧。
+*   **PacketScheduler 集成**: 调度器支持通过 ARQ 或直接串口两种发送路径，自动适配。
+*   **配置扩展**: `config/default.json` 新增 `serial.enableARQ` 和 `serial.linkReadyDelay` 参数。
 
 **2026-01-29 (v2.7) - File Sync Path & Deletion Fixes**
 *   **Path Resolution**: 引入 `pathUtils.js` 工具类，支持家目录 symbol (~) 解析及全量绝对路径支持，解决了文件同步错误落入程序根目录的 Bug。

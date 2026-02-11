@@ -1,8 +1,10 @@
-# SerialSync 技术参考手册 (v2.7)
+# SerialSync 技术参考手册 (v2.9)
 
 本文档整合了 SerialSync 的系统架构、通信协议规范及核心性能机制。
 
-**v2.3 新增**: API转发 (HTTP透明代理) - 详见 [api_forwarding_design.md](./api_forwarding_design.md)
+**v2.9 新增**: ARQ 可靠传输层 + 传输性能优化 — 详见下方 §3.5 & §3.6
+
+**v2.3 新增**: API转发 (HTTP透明代理) — 详见 [api_forwarding_design.md](./api_forwarding_design.md)
 
 ---
 
@@ -11,21 +13,23 @@
 ### 1.1 核心理念
 将底层通信与上层业务彻底解耦，引入"串口桥"与"优先级队列"机制，实现高可靠、多任务并发的串口通信系统。通过统一的 **应用控制层 (AppController)** 为客户端提供一致接口。
 
-### 1.2 四层架构设计
+### 1.2 分层架构设计
 
-系统自底向上分为四层：
+系统自底向上分为以下各层：
 
 1.  **链路层 (Link Layer)**：`SerialBridge`
-    *   负责物理串口管理、**COBS 编解码** (帧同步)、**CRC-16 校验** (完整性) 和流控。
-2.  **调度层 (Scheduling Layer)**：`PacketScheduler`
-    *   管理 P0-P3 四级优先级队列，实现抢占式调度。
-3.  **业务层 (Service Layer)**：`Services`
+    *   负责物理串口管理、**COBS 编解码** (帧同步)、**CRC-16 校验** (完整性)、流控及链路就绪延迟。
+2.  **可靠传输层 (Reliable Transport Layer)**：`ReliableLink` *(v2.8 新增)*
+    *   基于 ARQ (Automatic Repeat reQuest) 的链路层可靠传输。支持滑动窗口 (WINDOW_SIZE=4)、自动重传、序列号确认和去重。
+3.  **调度层 (Scheduling Layer)**：`PacketScheduler`
+    *   管理 P0-P3 四级优先级队列，实现抢占式调度。支持 ARQ 和直接串口两种发送路径。
+4.  **业务层 (Service Layer)**：`Services`
     *   模块化的业务逻辑实现 (文件传输、聊天、系统服务)。
-4.  **接口层 (Interface Layer)**：`AppController`
+5.  **接口层 (Interface Layer)**：`AppController`
     *   系统的统一入口 (Facade)，负责命令路由和状态广播。
-5.  **接入层 (Access Layer)**：`ApiServer`
-    *   基于 HTTP/WebSocket 的 API 服务，为持 Web/Desktop 客户端提供远程控制能力。支持 1MB 负载解析，适配大容量 IM 消息推送。
-6.  **持久化层 (Persistence Layer)**：`Store`
+6.  **接入层 (Access Layer)**：`ApiServer`
+    *   基于 HTTP/WebSocket 的 API 服务，为 Web/Desktop 客户端提供远程控制能力。支持 1MB 负载解析。
+7.  **持久化层 (Persistence Layer)**：`Store`
     *   Web 端基于 Zustand Persist 实现聊天历史与传输状态的跨会话保存。
 
 ### 1.3 核心组件
@@ -81,11 +85,11 @@
 
 ## 3. 核心机制与性能优化
 
-### 3.1 滑动窗口流控 (Sliding Window)
-针对大文件传输 (v2.1 优化)：
-*   **窗口大小**: **50 个 Chunk** (约 50KB)。发送端一次性发送窗口内数据，无需逐包等待。
-*   **ACK 机制**: 接收端每收到 **20 个 Chunk** 发送一次 `FILE_ACK`，告知期望的 `nextSeq`。
-*   **重传策略**: 选择性重传 (Selective Repeat)。如果 `nextSeq` 未推进，发送端重传对应包。
+### 3.1 应用层滑动窗口流控 (File Sliding Window)
+针对大文件传输 (v2.1 引入)：
+*   **窗口大小**: **25 个 Chunk** (约 50KB)。发送端一次性发送窗口内数据。
+*   **ACK 机制**: 接收端每收到 **5 个 Chunk** 发送一次 `FILE_ACK`(`ackInterval=5`)，告知期望的 `nextSeq`。(v2.9.4 优化)
+*   **重传策略**: ARQ 模式下由链路层保证可靠性，应用层不再重传数据帧 (`reliableTransport` 标志)。非 ARQ 模式下保留选择性重传。
 
 ### 3.2 断点续传 (Resumable Upload)
 v2.2 新增功能，基于文件 Hash 和元数据文件：
@@ -97,18 +101,36 @@ v2.2 新增功能，基于文件 Hash 和元数据文件：
 4.  **原子完成与冲突处理**: 传输完成后，接收端将 `.part` 临时文件重命名为正式文件名。若文件名冲突，支持自增重命名（如 `file_1.zip`）。(v2.5 增强)
 
 ### 3.3 性能指标
-在 115200 bps 波特率下：
-*   **吞吐量**: 约 10-11 KB/s (理论极限的 70-80%)。
-*   **传输速度**: 100MB 文件约需 2-3 分钟。
-*   **提升**: 相比 v2.0 (逐包确认)，吞吐量提升 5-10 倍，协议开销减少 75%。
+在 115200 bps 波特率下 (v2.9.4 实测)：
+*   **吞吐量**: ~11.2 KB/s (理论极限 11.52 KB/s 的 **97%**)。
+*   **传输速度**: 1MB 文件约 89 秒，接近物理带宽上限。
+*   **提升**: 相比 v2.9.1 (停等+双层重传)，传输时间缩短 **65%**，有效帧数减少 **55%**。
 
 ### 3.4 参数调优建议
 
-| 场景 | 窗口大小 | Chunk 大小 | ACK 频率 |
-| :--- | :--- | :--- | :--- |
-| **标准 (默认)** | 50 | 1024 B | 每 20 包 |
-| **高质量链路** | 100 | 2048 B | 每 50 包 |
-| **低质量/无线** | 20 | 512 B | 每 10 包 |
+| 场景 | 窗口大小 | Chunk 大小 | ACK 频率 | ARQ 窗口 |
+| :--- | :--- | :--- | :--- | :--- |
+| **标准 (默认, v2.9)** | 25 | 2048 B | 每 5 包 | 4 帧 |
+| **高质量链路** | 50 | 2048 B | 每 10 包 | 8 帧 |
+| **低质量/无线** | 10 | 512 B | 每 5 包 | 2 帧 |
+
+### 3.5 ARQ 可靠传输层 (v2.8 新增)
+`ReliableLink` 在链路层提供帧级别的可靠传输保障：
+*   **滑动窗口**: `WINDOW_SIZE=4`，最多 4 帧并发在飞。
+*   **帧间延时**: `FRAME_INTERVAL=50ms`，控制发送节奏。
+*   **超时重传**: `ACK_TIMEOUT=5000ms`，未收到 ACK 的帧自动重传。
+*   **序列号管理**: 10-bit FSeq (0-1023) 循环使用，FAck 捎带确认。
+*   **去重**: 接收端基于 FSeq 去重，防止重复帧交付上层。
+*   **pendingQueue 保护**: 上限 50 条，溢出丢弃最旧条目防止 OOM。
+
+### 3.6 双层重传消除 (v2.9.3)
+ARQ 模式下存在两层重传机制冲突：
+*   **链路层**: `ReliableLink` 的 ACK_TIMEOUT (5s) 自动重传。
+*   **应用层**: `FileTransferService` 的 watchdog (5s) 数据重传。
+
+两层同时触发会导致帧序号浪费（实测 fSeq 翻倍）。解决方案：
+*   `AppController` 初始化时传递 `reliableTransport: bridge.enableARQ`。
+*   `FileTransferService._watchdog()` 检测到 `reliableTransport=true` 时跳过数据帧重传，仅保留控制帧 (Offer/Accept) 的重传。
 
 ---
 
