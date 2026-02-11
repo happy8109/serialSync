@@ -29,6 +29,7 @@ class FileTransferService extends EventEmitter {
 
         this.chunkSize = options.chunkSize || 1024;
         this.windowSize = options.windowSize || 10;
+        this.ackInterval = options.ackInterval || 5; // 每收到 N 个 chunk 回一次 FILE_ACK
         this.savePath = options.savePath || path.join(process.cwd(), 'received');
         this.conflictStrategy = options.conflictStrategy || 'rename';
         this.timeout = options.timeout || 10000; // 默认 10 秒
@@ -308,14 +309,14 @@ class FileTransferService extends EventEmitter {
             speed: this._updateSpeed(s, s.receivedChunks)
         });
 
-        if (s.receivedChunks === s.chunks || s.receivedBitmap.size % this.windowSize === 0) {
+        if (s.receivedChunks === s.chunks || s.receivedChunks % this.ackInterval === 0) {
             this._sendAck(s);
         } else {
-            // 延迟 ACK：如果当前包不足以触发窗口确认，500ms 后强制确认
+            // 延迟 ACK：如果当前包不足以触发窗口确认，200ms 后强制确认
             if (s.ackTimer) clearTimeout(s.ackTimer);
             s.ackTimer = setTimeout(() => {
                 if (this.recvSessions.has(id)) this._sendAck(s);
-            }, 500);
+            }, 200);
         }
     }
 
