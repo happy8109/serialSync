@@ -17,14 +17,17 @@ const PacketCodec = require('./PacketCodec');
 const { logger } = require('../../utils/logger');
 const linkLogger = logger.create('ReliableLink');
 
-// 默认配置
+// 默认配置 (基于 115200 波特率计算)
+// 1 帧 ≈ 2200 字节 → 物理传输 ≈ 191ms
+// 窗口 4 帧 → 全部发完 ≈ 800ms
+// ACK 来回 ≈ 300ms，超时设 5s 留足余量
 const DEFAULT_CONFIG = {
-    WINDOW_SIZE: 16,       // 发送窗口大小
-    ACK_TIMEOUT: 1500,     // ACK 超时时间 (ms)，留出充足物理传输时间
+    WINDOW_SIZE: 4,        // 发送窗口大小 (小窗口避免洪泛)
+    ACK_TIMEOUT: 5000,     // ACK 超时时间 (ms)，留足物理传输+往返时间
     MAX_RETRIES: 5,        // 最大重试次数
     ACK_DELAY: 50,         // 延迟 ACK 时间 (ms)，用于捎带确认
     SEQ_MODULO: 65536,     // 序号模 (FSeq 为 2 字节)
-    FRAME_INTERVAL: 20     // 帧间延时 (ms)，避免写入洪泛
+    FRAME_INTERVAL: 200    // 帧间延时 (ms)，匹配物理传输速率
 };
 
 class ReliableLink extends EventEmitter {
