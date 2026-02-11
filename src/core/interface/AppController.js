@@ -27,7 +27,9 @@ class AppController extends EventEmitter {
         this.serviceManager = new ServiceManager(this.scheduler);
         this.messageService = new MessageService();
         this.systemService = new SystemService();
-        this.fileTransferService = new FileTransferService();
+        this.fileTransferService = new FileTransferService({
+            reliableTransport: this.bridge.enableARQ // ARQ 模式下禁用应用层重传
+        });
         this.httpProxyService = new HttpProxyService();
         this.fileSyncService = new FileSyncService();
 

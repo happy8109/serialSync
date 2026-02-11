@@ -6,10 +6,10 @@
  * - 发送端: 分配 FSeq，维护发送窗口，超时重传
  * - 接收端: 解析 FSeq/FAck，捎带确认，去重
  * 
- * v3.2 - 停等协议 + 链路诊断
- *   - WINDOW_SIZE=1: 一帧一确认，最可靠
- *   - 添加 info 级诊断日志，便于物理环境调试
- *   - 支持链路就绪延迟 (由 SerialBridge 控制)
+ * v3.2.1 - 滑动窗口提速
+ *   - WINDOW_SIZE=4: 稳定链路已确认，提升窗口到 4 帧并发
+ *   - FRAME_INTERVAL=50ms: 缩短帧间延时
+ *   - 保留 pendingQueue 上限保护和链路就绪延迟
  */
 
 const EventEmitter = require('events');
@@ -17,17 +17,16 @@ const PacketCodec = require('./PacketCodec');
 const { logger } = require('../../utils/logger');
 const linkLogger = logger.create('ReliableLink');
 
-// 默认配置 (停等模式，基于 115200 波特率)
+// 默认配置 (滑动窗口，基于 115200 波特率)
 // 1 帧 ≈ 2200 字节 → 物理传输 ≈ 191ms
-// 停等: 发1帧 → 等ACK → 再发下1帧
-// 往返: 帧TX(191ms) + B处理(50ms) + ACK TX(50ms) ≈ 300ms
+// 窗口 4 帧: 先发4帧(50ms间隔) → 等累积ACK → 滑动发下一批
 const DEFAULT_CONFIG = {
-    WINDOW_SIZE: 1,        // 停等协议: 一次只发一帧
-    ACK_TIMEOUT: 3000,     // ACK 超时时间 (ms)，停等模式下只有1帧在飞
-    MAX_RETRIES: 8,        // 最大重试次数 (增加容错)
+    WINDOW_SIZE: 4,        // 发送窗口: 4帧并发
+    ACK_TIMEOUT: 5000,     // ACK 超时 (ms)，4帧窗口需更多时间
+    MAX_RETRIES: 8,        // 最大重试次数
     ACK_DELAY: 50,         // 延迟 ACK 时间 (ms)，用于捎带确认
     SEQ_MODULO: 65536,     // 序号模 (FSeq 为 2 字节)
-    FRAME_INTERVAL: 200,   // 帧间延时 (ms)，匹配物理传输速率
+    FRAME_INTERVAL: 50,    // 帧间延时 (ms)，缩短以提高吞吐量
     MAX_PENDING: 50        // 等待队列上限，防止 OOM
 };
 

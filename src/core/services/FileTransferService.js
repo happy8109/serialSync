@@ -33,6 +33,9 @@ class FileTransferService extends EventEmitter {
         this.conflictStrategy = options.conflictStrategy || 'rename';
         this.timeout = options.timeout || 10000; // 默认 10 秒
 
+        // 可靠传输标志：底层使用 ARQ 时，禁用应用层数据重传
+        this.reliableTransport = options.reliableTransport || false;
+
         // Watchdog: 2秒检查一次超时重传
         setInterval(() => this._watchdog(), 2000);
     }
@@ -446,6 +449,11 @@ class FileTransferService extends EventEmitter {
         const now = Date.now();
         for (const s of this.sendSessions.values()) {
             if (s.status === 'sending' && (now - s.lastProgressTime > this.timeout)) {
+                // ARQ 模式下跳过应用层数据重传（链路层已保证可靠）
+                if (this.reliableTransport) {
+                    s.lastProgressTime = now; // 重置计时避免反复触发
+                    continue;
+                }
                 bridgeLogger.warn(`[传输超时重传] ${this.timeout}ms未收到响应，重发当前窗口: ${s.id.substring(0, 8)}`);
                 s.lastProgressTime = now;
                 s.inflight.clear();
