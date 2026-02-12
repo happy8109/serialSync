@@ -212,7 +212,7 @@ class ReliableLink extends EventEmitter {
 
         // 如果释放了窗口空间，尝试发送等待队列中的帧
         if (released > 0) {
-            linkLogger.info(`ACK 确认释放 ${released} 帧: [${releasedSeqs.join(',')}], pending=${this.pendingQueue.length}`);
+            linkLogger.debug(`ACK 确认释放 ${released} 帧: [${releasedSeqs.join(',')}], pending=${this.pendingQueue.length}`);
             this._flushPending();
         }
     }

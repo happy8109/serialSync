@@ -542,6 +542,10 @@ class HttpProxyService extends EventEmitter {
         return Array.from(this.remoteServices.values());
     }
 
+    clearRemoteServices() {
+        this.remoteServices.clear();
+    }
+
     // =========================================================================
     // Health Check
     // =========================================================================

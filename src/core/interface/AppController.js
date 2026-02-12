@@ -77,6 +77,22 @@ class AppController extends EventEmitter {
         this.bridge.on('error', (err) => this.emit('error', err));
         this.bridge.on('status-message', (msg) => this.emit('system_message', `[串口] ${msg}`));
 
+        // 心跳联动：对端离线/上线
+        this.bridge.on('linkLost', () => {
+            appLogger.warn('[心跳] 对端离线，清空远程服务缓存');
+            this.httpProxyService.clearRemoteServices();
+            this.emit('status', this.getStatus());
+        });
+        this.bridge.on('linkReady', () => {
+            appLogger.info('[心跳] 对端上线，触发服务发现');
+            // 延迟触发，等待对端初始化完成
+            setTimeout(() => {
+                this.httpProxyService.broadcastDiscovery();
+                this.fileSyncService.broadcastDiscovery();
+            }, 1000);
+            this.emit('status', this.getStatus());
+        });
+
         // 监听收到数据帧 -> 分发给服务
         this.bridge.on('frame', (frame) => {
             this.serviceManager.handleFrame(frame);
