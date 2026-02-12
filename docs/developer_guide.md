@@ -6,13 +6,15 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.9 (ARQ Reliable Transport & Performance Tuning)
+**当前版本**: v2.9.6 (Heartbeat & Link Status)
 
 ### 已完成功能 (Phase 1-4)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
 - [x] **服务层**: MessageService (Chat), FileTransferService (Sliding Window), SystemService。
 - [x] **API Server**: 基于 Express/WS 的 REST + WebSocket 服务。 (1MB Payload Limit)
 - [x] **Web UI**: 统一 IM 风格聊天界面，集成文件传输、历史记录持久化、实时速度显示。 (v2.5)
+- [x] **心跳握手**: 持续性 PING 心跳取代盲等计时器，支持任意时序启动和断线重连。 (v2.9.5)
+- [x] **UI 三态指示器**: 绿(对端在线)/橙(等待对端)/红(串口断开)。 (v2.9.6)
 
 ### 未来计划 (Phase 5 - Air-gap Bridge)
 - [ ] **v2.6 隔离网络数据摆渡**: 
@@ -113,6 +115,13 @@ CLI 启动后进入交互式 REPL 模式。
 
 ## 5. 最近变更 (Changelog Summary)
 
+**2026-02-12 (v2.9.6) - Heartbeat & Link Status**
+*   **持续性心跳握手 (v2.9.5)**: `SerialBridge` 用 PING/PONG 心跳取代盲等 `linkReadyDelay` 计时器。快探测 2s（链路未就绪时）/ 慢保活 10s（链路就绪后）/ 连续 3 次无 PONG 判定断连。
+*   **ARQ 兼容**: 心跳 PING/PONG (fSeq=0) 在 bridge 层拦截，不进入 ARQ 管道，避免序列号冲突。
+*   **UI 三态指示器 (v2.9.6)**: `MainLayout` 和 `Sidebar` 状态灯从二态（连接/断开）改为三态：绿(对端在线)/橙(等待对端)/红(串口断开)。
+*   **远程服务联动**: 对端离线时自动清空远程服务缓存，上线时自动触发服务发现和同步发现。
+*   **ACK 日志降级**: `ReliableLink` 的 ACK 确认日志从 info 降为 debug，减少正常传输时的日志噪音。
+
 **2026-02-11 (v2.9) - ARQ Performance Tuning**
 *   **OOM 修复 (v2.9.1)**: `ReliableLink.pendingQueue` 新增上限(50)防止内存泄漏，高频日志降为 debug。
 *   **滑动窗口提速 (v2.9.2)**: ARQ 窗口 `WINDOW_SIZE` 从 1 提升至 4，`FRAME_INTERVAL` 从 200ms 缩短至 50ms。
@@ -122,9 +131,9 @@ CLI 启动后进入交互式 REPL 模式。
 
 **2026-02-08 (v2.8) - ARQ Reliable Transport Layer**
 *   **ReliableLink**: 新增链路层 ARQ 可靠传输模块，支持自动重传、序列号确认和超时管理。
-*   **链路就绪延迟**: `SerialBridge` 新增 DTR/RTS 信号检测和可配置的链路就绪延迟，防止启动阶段丢帧。
+*   **链路就绪检测**: `SerialBridge` 新增 DTR/RTS 信号检测和心跳探测机制，防止启动阶段丢帧。
 *   **PacketScheduler 集成**: 调度器支持通过 ARQ 或直接串口两种发送路径，自动适配。
-*   **配置扩展**: `config/default.json` 新增 `serial.enableARQ` 和 `serial.linkReadyDelay` 参数。
+*   **配置扩展**: `config/default.json` 新增 `serial.enableARQ` 参数。
 
 **2026-01-29 (v2.7) - File Sync Path & Deletion Fixes**
 *   **Path Resolution**: 引入 `pathUtils.js` 工具类，支持家目录 symbol (~) 解析及全量绝对路径支持，解决了文件同步错误落入程序根目录的 Bug。

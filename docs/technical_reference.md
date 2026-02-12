@@ -1,6 +1,8 @@
-# SerialSync 技术参考手册 (v2.9)
+# SerialSync 技术参考手册 (v2.9.6)
 
 本文档整合了 SerialSync 的系统架构、通信协议规范及核心性能机制。
+
+**v2.9.6 新增**: 持续性心跳握手 + UI 三态指示器 — 详见下方 §3.7
 
 **v2.9 新增**: ARQ 可靠传输层 + 传输性能优化 — 详见下方 §3.5 & §3.6
 
@@ -18,7 +20,7 @@
 系统自底向上分为以下各层：
 
 1.  **链路层 (Link Layer)**：`SerialBridge`
-    *   负责物理串口管理、**COBS 编解码** (帧同步)、**CRC-16 校验** (完整性)、流控及链路就绪延迟。
+    *   负责物理串口管理、**COBS 编解码** (帧同步)、**CRC-16 校验** (完整性)、流控及 **PING/PONG 心跳探测**。
 2.  **可靠传输层 (Reliable Transport Layer)**：`ReliableLink` *(v2.8 新增)*
     *   基于 ARQ (Automatic Repeat reQuest) 的链路层可靠传输。支持滑动窗口 (WINDOW_SIZE=4)、自动重传、序列号确认和去重。
 3.  **调度层 (Scheduling Layer)**：`PacketScheduler`
@@ -131,6 +133,33 @@ ARQ 模式下存在两层重传机制冲突：
 两层同时触发会导致帧序号浪费（实测 fSeq 翻倍）。解决方案：
 *   `AppController` 初始化时传递 `reliableTransport: bridge.enableARQ`。
 *   `FileTransferService._watchdog()` 检测到 `reliableTransport=true` 时跳过数据帧重传，仅保留控制帧 (Offer/Accept) 的重传。
+
+### 3.7 心跳与链路状态管理 (v2.9.5)
+`SerialBridge` 通过持续性 PING/PONG 心跳机制管理链路状态，取代了之前的盲等计时器 (`linkReadyDelay`)。
+
+**状态机**:
+```
+串口 open → linkReady=false → 每 2s 发 raw PING（快探测）
+                ↓ 收到对端任何合法帧
+         linkReady=true → 每 10s 发 raw PING（慢保活）
+                ↓ 连续 3 次无 PONG
+         linkReady=false → 切回 2s 快探测 → emit('linkLost')
+```
+
+**关键参数**:
+
+| 参数 | 值 | 含义 |
+| :--- | :--- | :--- |
+| `PROBE_INTERVAL` | 2000ms | 快探测间隔 (linkReady=false) |
+| `KEEPALIVE_INTERVAL` | 10000ms | 慢保活间隔 (linkReady=true) |
+| `MAX_MISS` | 3 | 连续丢失 N 次 PONG 判定断连 |
+
+**ARQ 兼容**: 心跳 PING/PONG 使用 fSeq=0 标识，在 bridge 层拦截处理，不进入 ARQ 管道（避免被当作重复帧丢弃）。
+
+**联动机制**:
+*   `linkLost` → 清空远程服务缓存、UI 指示灯切换为橙色。
+*   `linkReady` → 自动触发服务发现和同步发现、UI 指示灯切换为绿色。
+*   UI 三态指示器：🟢 对端在线 / 🟠 等待对端 / 🔴 串口断开。
 
 ---
 

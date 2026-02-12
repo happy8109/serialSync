@@ -38,7 +38,7 @@ class SerialBridge extends EventEmitter {
         this.heartbeatMissCount = 0;  // 连续未收到 PONG 的次数
         this.heartbeatWaitingPong = false; // 是否正在等待 PONG
         this.PROBE_INTERVAL = 2000;   // 快探测间隔 (linkReady=false)
-        this.KEEPALIVE_INTERVAL = 30000; // 慢保活间隔 (linkReady=true)
+        this.KEEPALIVE_INTERVAL = 10000; // 慢保活间隔 (linkReady=true)
         this.MAX_MISS = 3;            // 连续丢失 N 次 PONG 判定断连
 
         // 统计信息
