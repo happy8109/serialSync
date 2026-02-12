@@ -1,7 +1,10 @@
 /**
  * SerialBridge.js
  * 链路层核心：负责串口连接、流处理、COBS帧同步与流控
- * v3.1 - 集成 ARQ 可靠传输层
+ * v3.2 - 持续性心跳握手 (取代盲等 linkReadyDelay)
+ *   - 快探测: linkReady=false 时每 2s 发 PING
+ *   - 慢保活: linkReady=true 后每 30s 发 PING
+ *   - 断线检测: 连续 3 次 PING 无 PONG → linkReady=false
  */
 
 const { SerialPort } = require('serialport');
@@ -29,10 +32,14 @@ class SerialBridge extends EventEmitter {
         this.shouldAutoReconnect = false; // 用户主动断开时不重连
         this.lastPath = null; // 记住上次连接的路径
 
-        // 链路就绪标志（连接后延迟一段时间再允许发帧）
+        // 链路就绪标志（通过心跳探测确认对端在线）
         this.linkReady = false;
-        this.linkReadyDelay = options.linkReadyDelay || 2000; // 默认 2秒
-        this.linkReadyTimer = null;
+        this.heartbeatTimer = null;
+        this.heartbeatMissCount = 0;  // 连续未收到 PONG 的次数
+        this.heartbeatWaitingPong = false; // 是否正在等待 PONG
+        this.PROBE_INTERVAL = 2000;   // 快探测间隔 (linkReady=false)
+        this.KEEPALIVE_INTERVAL = 30000; // 慢保活间隔 (linkReady=true)
+        this.MAX_MISS = 3;            // 连续丢失 N 次 PONG 判定断连
 
         // 统计信息
         this.stats = {
@@ -117,14 +124,12 @@ class SerialBridge extends EventEmitter {
                 this.reconnectAttempts = 0;
                 this._setupListeners();
 
-                // 链路就绪延迟: 等待对端也完成启动
+                // 启动心跳探测（取代盲等计时器）
                 this.linkReady = false;
-                bridgeLogger.info(`[串口] 链路就绪延迟 ${this.linkReadyDelay}ms...`);
-                this.linkReadyTimer = setTimeout(() => {
-                    this.linkReady = true;
-                    bridgeLogger.info(`[串口] 链路已就绪，允许发送帧`);
-                    this.emit('linkReady');
-                }, this.linkReadyDelay);
+                this.heartbeatMissCount = 0;
+                this.heartbeatWaitingPong = false;
+                bridgeLogger.info(`[串口] 开始心跳探测，等待对端响应...`);
+                this._startHeartbeat(this.PROBE_INTERVAL);
 
                 this.emit('open');
                 resolve();
@@ -352,6 +357,30 @@ class SerialBridge extends EventEmitter {
                 this.stats.rxFrames++;
                 bridgeLogger.debug(`[串口] 解码成功: type=0x${frame.type.toString(16)}, fSeq=${frame.fSeq}, fAck=${frame.fAck}, bodyLen=${frame.body.length}`);
 
+                // 收到合法帧 → 链路就绪 + 重置心跳失败计数
+                // (任何合法帧都证明对端在线，避免繁忙时误判断连)
+                this.heartbeatMissCount = 0;
+                if (!this.linkReady) {
+                    this.linkReady = true;
+                    bridgeLogger.info(`[串口] 收到对端帧，链路已就绪`);
+                    // 切换到慢保活
+                    this._startHeartbeat(this.KEEPALIVE_INTERVAL);
+                    this.emit('linkReady');
+                }
+
+                // 心跳 PING/PONG 在 bridge 层拦截，不进入 ARQ
+                // （raw PING 的 fSeq=0 会被 ARQ 当作重复帧丢弃）
+                if (frame.type === 0x00 && frame.fSeq === 0) {
+                    // 收到心跳 PING → 直接回复 raw PONG
+                    this._sendRawPong();
+                    continue; // 不传递给 ARQ 或上层
+                }
+                if (frame.type === 0x01 && frame.fSeq === 0) {
+                    // 收到心跳 PONG → 标记探测周期完成
+                    this.heartbeatWaitingPong = false;
+                    continue; // 不传递给 ARQ 或上层
+                }
+
                 // 根据 ARQ 模式处理帧
                 if (this.enableARQ && this.reliableLink) {
                     this.reliableLink._onFrame(frame);
@@ -377,15 +406,79 @@ class SerialBridge extends EventEmitter {
         this.port = null;
         this.buffer = Buffer.alloc(0);
 
-        // 清理链路就绪定时器
-        if (this.linkReadyTimer) {
-            clearTimeout(this.linkReadyTimer);
-            this.linkReadyTimer = null;
-        }
+        // 停止心跳
+        this._stopHeartbeat();
 
         // 重置 ARQ 状态
         if (this.reliableLink) {
             this.reliableLink.reset();
+        }
+    }
+
+    // ========== 心跳探测 ==========
+
+    /**
+     * 启动/重启心跳定时器
+     * @param {number} interval - 探测间隔 (ms)
+     */
+    _startHeartbeat(interval) {
+        this._stopHeartbeat();
+        this.heartbeatTimer = setInterval(() => {
+            if (!this.isConnected || !this.port) return;
+
+            // 检查上一轮 PONG 是否收到
+            if (this.heartbeatWaitingPong) {
+                this.heartbeatMissCount++;
+                if (this.linkReady && this.heartbeatMissCount >= this.MAX_MISS) {
+                    bridgeLogger.warn(`[串口] 心跳超时: 连续 ${this.MAX_MISS} 次未收到 PONG，链路标记为未就绪`);
+                    this.linkReady = false;
+                    this.emit('linkLost');
+                    // 切回快探测
+                    this._startHeartbeat(this.PROBE_INTERVAL);
+                    return;
+                }
+            }
+
+            // 发送 PING（绕过 linkReady 检查，直接写串口）
+            this._sendRawPing();
+            this.heartbeatWaitingPong = true;
+        }, interval);
+    }
+
+    _stopHeartbeat() {
+        if (this.heartbeatTimer) {
+            clearInterval(this.heartbeatTimer);
+            this.heartbeatTimer = null;
+        }
+        this.heartbeatMissCount = 0;
+        this.heartbeatWaitingPong = false;
+    }
+
+    /**
+     * 绕过 linkReady 检查，直接发送 PING 帧
+     */
+    _sendRawPing() {
+        if (!this.port || !this.isConnected) return;
+        try {
+            const packet = PacketCodec.encode(0x00, 0, Buffer.alloc(0)); // type=0x00 = PING
+            this.port.write(packet);
+            bridgeLogger.debug(`[串口] 发送心跳 PING`);
+        } catch (err) {
+            bridgeLogger.debug(`[串口] 心跳 PING 发送失败: ${err.message}`);
+        }
+    }
+
+    /**
+     * 绕过 linkReady 检查，直接发送 PONG 帧
+     */
+    _sendRawPong() {
+        if (!this.port || !this.isConnected) return;
+        try {
+            const packet = PacketCodec.encode(0x01, 0, Buffer.alloc(0)); // type=0x01 = PONG
+            this.port.write(packet);
+            bridgeLogger.debug(`[串口] 回复心跳 PONG`);
+        } catch (err) {
+            bridgeLogger.debug(`[串口] 心跳 PONG 发送失败: ${err.message}`);
         }
     }
 }
