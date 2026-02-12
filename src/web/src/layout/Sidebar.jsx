@@ -19,7 +19,7 @@ const NavItem = ({ icon: Icon, label, id, active, onClick }) => (
 );
 
 const Sidebar = () => {
-    const { activeTab, setActiveTab, isConnected, port } = useAppStore();
+    const { activeTab, setActiveTab, isConnected, linkReady, port } = useAppStore();
 
     const navItems = [
         { id: 'chat', icon: MessageSquare, label: '聊天' },
@@ -27,6 +27,16 @@ const Sidebar = () => {
         { id: 'api', icon: Zap, label: 'API 调试' },
         { id: 'settings', icon: Settings, label: '设置' },
     ];
+
+    // 三态: 绿(linkReady) / 橙(串口连接但对端离线) / 红(串口断开)
+    const indicatorClass = isConnected
+        ? (linkReady
+            ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]"
+            : "bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.6)]")
+        : "bg-red-500";
+    const tooltip = isConnected
+        ? (linkReady ? `Connected: ${port}` : `Waiting: ${port}`)
+        : "Disconnected";
 
     return (
         <div className="w-16 bg-card border-r border-border flex flex-col items-center py-4 h-screen">
@@ -45,9 +55,9 @@ const Sidebar = () => {
                 <div
                     className={cn(
                         "w-3 h-3 rounded-full",
-                        isConnected ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]" : "bg-red-500"
+                        indicatorClass
                     )}
-                    title={isConnected ? `Connected: ${port}` : "Disconnected"}
+                    title={tooltip}
                 />
                 <span className="text-[10px] text-muted-foreground font-mono">
                     {port || 'OFF'}

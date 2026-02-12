@@ -6,12 +6,14 @@ export const useAppStore = create(
         (set) => ({
             // Connection Status (Not persisted)
             isConnected: null, // Start as null to distinguish from 'explicitly false'
+            linkReady: false, // 对端是否在线 (心跳确认)
             port: null,
             baudRate: null,
             stats: { rxBytes: 0, txBytes: 0, crcErrors: 0 },
             peerActivities: {},
             setConnectionStatus: (status) => set((state) => ({
                 isConnected: status.connected !== undefined ? status.connected : state.isConnected,
+                linkReady: status.linkReady !== undefined ? status.linkReady : state.linkReady,
                 port: status.port !== undefined ? status.port : state.port,
                 baudRate: status.baudRate !== undefined ? status.baudRate : state.baudRate,
                 stats: status.bridgeStats !== undefined ? status.bridgeStats : state.stats,

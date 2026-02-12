@@ -5,8 +5,21 @@ import { cn } from '../lib/utils';
 import SettingsModal from '../features/settings/SettingsModal';
 
 const MainLayout = ({ children }) => {
-    const { isConnected, port, baudRate, stats } = useAppStore();
+    const { isConnected, linkReady, port, baudRate, stats } = useAppStore();
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+
+    // 三态指示器: 绿(linkReady) / 橙(串口连接但对端离线) / 红(串口断开)
+    const indicatorClass = isConnected
+        ? (linkReady
+            ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]"
+            : "bg-orange-500 shadow-[0_0_8px_rgba(249,115,22,0.4)]")
+        : "bg-red-500";
+    const statusLabel = isConnected
+        ? (linkReady ? port : `${port} (等待对端)`)
+        : 'DISCONNECTED';
+    const baudLabel = isConnected
+        ? (baudRate ? `${baudRate} bps` : '-- bps')
+        : 'Disconnected';
 
     return (
         <div className="flex flex-col h-screen bg-background text-foreground overflow-hidden font-sans">
@@ -16,7 +29,7 @@ const MainLayout = ({ children }) => {
                     <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground shadow-sm">
                         <Cable size={20} />
                     </div>
-                    <h1 className="font-bold text-lg tracking-tight">SerialSync <span className="text-xs font-normal text-muted-foreground ml-1">v2.0</span></h1>
+                    <h1 className="font-bold text-lg tracking-tight">SerialSync <span className="text-xs font-normal text-muted-foreground ml-1">v2.9</span></h1>
                 </div>
 
                 <div className="flex items-center gap-4">
@@ -44,15 +57,15 @@ const MainLayout = ({ children }) => {
                             <div
                                 className={cn(
                                     "w-2.5 h-2.5 rounded-full transition-colors",
-                                    isConnected ? "bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.4)]" : "bg-red-500"
+                                    indicatorClass
                                 )}
                             />
                             <span className="font-medium">
-                                {isConnected ? port : 'DISCONNECTED'}
+                                {statusLabel}
                             </span>
                             <span className="w-px h-3 bg-border/50 mx-1"></span>
                             <span className="text-muted-foreground/70">
-                                {isConnected ? (baudRate ? `${baudRate} bps` : '-- bps') : 'Disconnected'}
+                                {baudLabel}
                             </span>
                         </div>
                     </div>

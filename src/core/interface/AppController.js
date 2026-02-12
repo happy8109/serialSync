@@ -429,6 +429,7 @@ class AppController extends EventEmitter {
         return {
             // Runtime Status
             connected: this.bridge.isConnected,
+            linkReady: this.bridge.linkReady,
             congested: this.bridge.isCongested,
             activePort: this.bridge.port ? this.bridge.port.path : null,
             port: this.bridge.port ? this.bridge.port.path : null, // Restore for frontend compatibility
