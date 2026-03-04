@@ -1,6 +1,6 @@
-# SerialSync - 串口通信与文件同步工具 (v2.9)
+# SerialSync - 串口通信与文件同步工具 (v2.9.7)
 
-![Version](https://img.shields.io/badge/version-2.9.4-blue.svg)
+![Version](https://img.shields.io/badge/version-2.9.7-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-green.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20kylin-orange.svg)
 

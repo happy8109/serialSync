@@ -6,7 +6,7 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.9.6 (Heartbeat & Link Status)
+**当前版本**: v2.9.7 (V2 Refactoring Completed)
 
 ### 已完成功能 (Phase 1-4)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
@@ -114,6 +114,10 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2026-03-04 (v2.9.7) - V2 Refactoring Completed**
+*   **代码清理**: 彻底删除重构前的 `src_legacy` 旧代码，V2 版本重构全部完成。
+*   **文档更新**: 标记 Phase 3 (API 转发) 为已完成状态，同步文档与代码进度。
 
 **2026-02-12 (v2.9.6) - Heartbeat & Link Status**
 *   **持续性心跳握手 (v2.9.5)**: `SerialBridge` 用 PING/PONG 心跳取代盲等 `linkReadyDelay` 计时器。快探测 2s（链路未就绪时）/ 慢保活 10s（链路就绪后）/ 连续 3 次无 PONG 判定断连。

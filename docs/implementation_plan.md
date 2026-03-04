@@ -49,42 +49,42 @@ SerialSync 旨在提供一个高效、可靠的串口文件传输与通信工具
 
 详细设计文档: [api_forwarding_design.md](./api_forwarding_design.md)
 
-- [ ] **核心模块开发**
-    - [ ] `src/core/services/HttpProxyService.js`
-        - [ ] 服务注册表管理 (registerService, loadServicesFromConfig)
-        - [ ] HTTP调用封装 (callLocalHttp)
-        - [ ] 请求/响应关联机制 (pendingRequests Map)
-        - [ ] 服务发现协议 (handleServiceQuery, queryRemoteServices)
-    - [ ] 更新 `src/core/interface/AppController.js`
-        - [ ] 集成 HttpProxyService
-        - [ ] 暴露API: pullService, queryRemoteServices, registerService
-    - [ ] 更新 `src/server/ApiServer.js`
-        - [ ] 新增路由: `/api/services/*` (local/remote/query/call)
+- [x] **核心模块开发**
+    - [x] `src/core/services/HttpProxyService.js`
+        - [x] 服务注册表管理 (registerService, loadServicesFromConfig)
+        - [x] HTTP调用封装 (callLocalHttp)
+        - [x] 请求/响应关联机制 (pendingRequests Map)
+        - [x] 服务发现协议 (handleServiceQuery, queryRemoteServices)
+    - [x] 更新 `src/core/interface/AppController.js`
+        - [x] 集成 HttpProxyService
+        - [x] 暴露API: pullService, queryRemoteServices, registerService
+    - [x] 更新 `src/server/ApiServer.js`
+        - [x] 新增路由: `/api/services/*` (local/remote/query/call)
 
-- [ ] **协议支持**
-    - [ ] 定义包类型常量 (0x30-0x33)
-    - [ ] 实现包体编解码 (JSON格式)
-    - [ ] 集成到 PacketScheduler (P1优先级)
+- [x] **协议支持**
+    - [x] 定义包类型常量 (0x30-0x33)
+    - [x] 实现包体编解码 (JSON格式)
+    - [x] 集成到 PacketScheduler (P1优先级)
 
-- [ ] **配置文件**
-    - [ ] 更新 `config/default.json` 添加 `services` 配置块
-    - [ ] 编写配置文件说明文档
-    - [ ] 提供配置模板示例
+- [x] **配置文件**
+    - [x] 更新 `config/default.json` 添加 `services` 配置块
+    - [x] 编写配置文件说明文档
+    - [x] 提供配置模板示例
 
-- [ ] **Web UI 开发**
-    - [ ] `src/web/src/features/api-forwarder/ServiceManager.jsx`
-        - [ ] 本地服务列表展示
-        - [ ] 对端服务查询与列表展示
-        - [ ] 刷新对端服务功能
-    - [ ] 改造 `src/web/src/features/api-forwarder/ApiDebugger.jsx`
-        - [ ] 从Mock实现改为真实API调用
-        - [ ] 支持从ServiceManager传入serviceId
-        - [ ] 显示真实的RTT和HTTP响应
+- [x] **Web UI 开发**
+    - [x] `src/web/src/features/api-forwarder/ServiceManager.jsx`
+        - [x] 本地服务列表展示
+        - [x] 对端服务查询与列表展示
+        - [x] 刷新对端服务功能
+    - [x] 改造 `src/web/src/features/api-forwarder/ApiDebugger.jsx`
+        - [x] 从Mock实现改为真实API调用
+        - [x] 支持从ServiceManager传入serviceId
+        - [x] 显示真实的RTT和HTTP响应
 
-- [ ] **测试**
-    - [ ] 单元测试: HttpProxyService
-    - [ ] 集成测试: 双端通信测试 (COM1 ↔ COM2)
-    - [ ] 性能测试: 延迟与带宽测试
+- [x] **测试**
+    - [x] 单元测试: HttpProxyService
+    - [x] 集成测试: 双端通信测试 (COM1 ↔ COM2)
+    - [x] 性能测试: 延迟与带宽测试
 
 ### Phase 4: 统一聊天与文件传输融合 (Unified IM-Style)
 
@@ -124,7 +124,7 @@ SerialSync 旨在提供一个高效、可靠的串口文件传输与通信工具
 
 ## 3. 已知问题与待办 (Backlog)
 
-- [ ] **Bug**: `src/web/src/src` 目录似乎是冗余的，需要清理。
+- [x] **Bug**: `src/web/src/src` 目录似乎是冗余的，需要清理。(已清理旧代码)
 - [ ] **Refactor**: 统一前后端的类型定义 (Shared Types)。
 - [ ] **Feature**: 支持文件夹传输 (目前仅支持单文件)。
 - [x] **Feature**: 传输历史记录持久化 (已纳入 Phase 4)。
