@@ -568,22 +568,27 @@ class HttpProxyService extends EventEmitter {
             const parsedUrl = url.parse(service.endpoint);
             const httpMod = parsedUrl.protocol === 'https:' ? https : http;
 
+            const reqHeaders = { ...service.headers };
+            const dummyBody = '{}';
+            
+            if (['POST', 'PUT', 'PATCH'].includes(service.method)) {
+                if (!reqHeaders['content-type'] && !reqHeaders['Content-Type']) {
+                    reqHeaders['Content-Type'] = 'application/json';
+                }
+                reqHeaders['Content-Length'] = Buffer.byteLength(dummyBody);
+            }
+
             const req = httpMod.request({
                 hostname: parsedUrl.hostname,
                 port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
                 path: parsedUrl.path,
                 method: service.method, // Try with configured method
-                headers: { ...service.headers },
+                headers: reqHeaders,
                 timeout: 5000 // 5s timeout
             }, res => {
-                // Any response with valid status code means it's alive
-                // 2xx (Success), 3xx (Redirect), 401/403 (Auth required but reachable)
-                // 404 (Not Found) or 5xx (Server Error) are considered offline/invalid for this detection
-                if ((res.statusCode >= 200 && res.statusCode < 400) || res.statusCode === 401 || res.statusCode === 403) {
-                    service.status = 'online';
-                } else {
-                    service.status = 'offline';
-                }
+                // Any HTTP response means the target server is listening and reachable.
+                // Even 400, 404, 405, or 500 means it processed our health probe.
+                service.status = 'online';
                 service.lastCheck = Date.now();
                 res.destroy(); // We don't care about the body
             });
@@ -600,11 +605,8 @@ class HttpProxyService extends EventEmitter {
                 service.lastCheck = Date.now();
             });
 
-            // If it's a POST/PUT w/o body, some servers might hang or error, but we just check connectivity
-            // Ideally we should send dummy body if needed, but we don't know the schema.
-            // Sending empty body for POST
             if (['POST', 'PUT', 'PATCH'].includes(service.method)) {
-                req.write('{}');
+                req.write(dummyBody);
             }
 
             req.end();

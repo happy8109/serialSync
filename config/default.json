@@ -52,7 +52,7 @@
         "name": "System Info",
         "description": "Get system status",
         "version": "1.0",
-        "endpoint": "http://localhost:3000/api/status",
+        "endpoint": "http://localhost:3003/api/status",
         "method": "GET",
         "timeout": 10000,
         "enabled": true,
@@ -63,8 +63,19 @@
         "name": "每日简报",
         "description": "获取每日统计简报",
         "version": "1.0",
-        "endpoint": "http://localhost:3003/api/stats/daily/brief",
+        "endpoint": "http://localhost:3000/api/stats/daily/brief",
         "method": "GET",
+        "timeout": 10000,
+        "enabled": true,
+        "headers": {},
+        "params": {}
+      },
+      "RSE": {
+        "name": "execute",
+        "description": "",
+        "version": "1.0",
+        "endpoint": "http://localhost:3000/api/bridge/execute",
+        "method": "POST",
         "timeout": 10000,
         "enabled": true,
         "headers": {},
@@ -73,7 +84,7 @@
     }
   },
   "server": {
-    "port": 3000
+    "port": 3003
   },
   "web": {
     "port": 5173
