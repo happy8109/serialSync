@@ -29,7 +29,7 @@ const MainLayout = ({ children }) => {
                     <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground shadow-sm">
                         <Cable size={20} />
                     </div>
-                    <h1 className="font-bold text-lg tracking-tight">SerialSync <span className="text-xs font-normal text-muted-foreground ml-1">v2.9</span></h1>
+                    <h1 className="font-bold text-lg tracking-tight">SerialSync <span className="text-xs font-normal text-muted-foreground ml-1">v{__APP_VERSION__}</span></h1>
                 </div>
 
                 <div className="flex items-center gap-4">

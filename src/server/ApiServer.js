@@ -98,6 +98,17 @@ class ApiServer {
             }
         });
 
+        // 4.5. 触发系统冷启动热重启
+        router.post('/system/restart', (req, res) => {
+            this.logger.info('Received restart command via API. Exiting with code 42.');
+            res.json({ success: true, message: 'Restarting...' });
+            
+            // 给前端一点时间接收 HTTP 200 返回，然后再自杀
+            setTimeout(() => {
+                process.exit(42);
+            }, 500);
+        });
+
         // 5. 发送聊天消息
         router.post('/send/chat', (req, res) => {
             const { text } = req.body;
@@ -238,12 +249,21 @@ class ApiServer {
         // 15. 网关模式 (Gateway Mode) - 透明转发
         // 支持 GET/POST 等所有方法，路径如: /api/proxy/daily_brief?date=2024
         router.all('/proxy/:serviceId', async (req, res) => {
-            // 拦截内网发出的健康探测请求，直接返回200，避免引发高耗时的真实串口级联调用
-            if (req.headers['x-health-probe']) {
-                return res.json({ status: 'ok' });
-            }
-
             const { serviceId } = req.params;
+
+            // 拦截内网发出的健康探测请求，避免引发高耗时的真实串口级联调用
+            if (req.headers['x-health-probe']) {
+                // 检查请求的服务是否在当前节点的“本地服务”或“对端映射过来的远程服务”缓存字典中存在
+                // 这既保证了不产生真实的串口阻塞包，又实现了真实的“服务可用性接力验证”
+                const isLocal = this.controller.getLocalServices().some(s => s.id === serviceId);
+                const isRemote = this.controller.getRemoteServices().some(s => s.id === serviceId);
+                
+                if (isLocal || isRemote) {
+                    return res.json({ status: 'ok', serviceId, available: true });
+                } else {
+                    return res.status(503).json({ error: 'Service Unavailable', serviceId, available: false });
+                }
+            }
 
             // 智能提取参数
             let params = {};

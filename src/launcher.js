@@ -13,126 +13,147 @@
 
 const { spawn } = require('child_process');
 const path = require('path');
-
-// 读取配置文件 (Bypass node-config cache by reading file directly)
-const args = process.argv.slice(2); // Restore args definition
-let fileConfig = {};
-try {
-    const configPath = path.join(__dirname, '..', 'config', 'default.json');
-    if (require('fs').existsSync(configPath)) {
-        fileConfig = JSON.parse(require('fs').readFileSync(configPath, 'utf8'));
-    }
-} catch (e) {
-    console.error('[Launcher] Failed to read config/default.json', e);
-}
-
-// 1. 串口配置
-// 优先级: CLI 参数 > 配置文件 > 默认值
-const serialPort = args[0] || (fileConfig.serial && fileConfig.serial.port) || 'COM3';
-
-// 2. API 服务端口
-const apiPort = args[1] || (fileConfig.server && fileConfig.server.port) || 3000;
-
-// 3. Web UI 端口
-const webPort = args[2] || (fileConfig.web && fileConfig.web.port) || 5173;
+const fs = require('fs');
 
 const projectRoot = path.resolve(__dirname, '..');
 const serverScript = path.join(projectRoot, 'src', 'server', 'index.js');
 const webDir = path.join(projectRoot, 'src', 'web');
-
 const pkgVersion = require('../package.json').version;
-console.log('==================================================');
-console.log(`SerialSync Launcher v${pkgVersion}`);
-console.log(`Serial Port : ${serialPort}`);
-console.log(`API Port    : ${apiPort}`);
-console.log(`Web Port    : ${webPort}`);
-console.log('==================================================\n');
 
-const children = [];
+let serverProcess = null;
+let webProcess = null;
+let isRestarting = false;
 
-// 1. 启动后端 API Server
-console.log('[Launcher] Starting API Server...');
-const serverProcess = spawn('node', ['--no-deprecation', serverScript, serialPort, apiPort], {
-    cwd: projectRoot,
-    stdio: 'pipe',
-    env: { ...process.env, PORT: String(apiPort) }
-});
-
-serverProcess.stdout.on('data', (data) => {
-    process.stdout.write(`[Backend] ${data}`);
-});
-serverProcess.stderr.on('data', (data) => {
-    process.stderr.write(`[Backend] ${data}`);
-});
-
-serverProcess.on('error', (err) => {
-    console.error(`[Launcher] Failed to start Backend: ${err.message}`);
-});
-
-children.push(serverProcess);
-
-// 2. 启动前端 Web UI (Vite Dev Server)
-const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-
-console.log('[Launcher] Starting Web UI...');
-const webProcess = spawn(npmCmd, ['run', 'dev'], {
-    cwd: webDir,
-    stdio: 'pipe',
-    env: {
-        ...process.env,
-        PORT: String(webPort),
-        API_PORT: String(apiPort),
-        NODE_OPTIONS: '--no-deprecation'
-    },
-    shell: true
-});
-
-webProcess.stdout.on('data', (data) => {
-    process.stdout.write(`[Frontend] ${data}`);
-});
-
-webProcess.stderr.on('data', (data) => {
-    const msg = data.toString();
-
-    // 检查是否是由于依赖缺失导致的错误
-    // 只有当明确包含 "not found" 且包含 "vite" 时才认为是依赖丢失
-    if (msg.includes('vite') && msg.includes('not found')) {
-        console.error('\n[Launcher] [ERROR] Frontend dependencies might be missing!');
-        console.error(`[Launcher] Please run: cd "${webDir}" && npm install\n`);
+// 跨平台杀掉进程树（解决 Windows 遗留孤儿进程霸占端口的问题）
+function killProcessTree(proc) {
+    if (!proc) return;
+    try {
+        if (process.platform === 'win32') {
+            const { execSync } = require('child_process');
+            execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+        } else {
+            // Linux/macOS 下常规 SIGTERM 可以正常传递并杀死子进程
+            proc.kill('SIGTERM');
+        }
+    } catch (e) {
+        try { proc.kill('SIGKILL'); } catch (err) {}
     }
+}
 
-    // 过滤掉已知的无害警告和错误
-    if (msg.includes('DeprecationWarning') ||
-        msg.includes('ws proxy socket error') ||
-        msg.includes('ECONNABORTED')) {
-        return;
+function readConfig() {
+    const args = process.argv.slice(2);
+    let fileConfig = {};
+    try {
+        const configPath = path.join(projectRoot, 'config', 'default.json');
+        if (fs.existsSync(configPath)) {
+            fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        }
+    } catch (e) {
+        console.error('[Launcher] Failed to read config/default.json', e);
     }
-    process.stderr.write(`[Frontend] ${data}`);
-});
+    
+    const serialPort = args[0] || (fileConfig.serial && fileConfig.serial.port) || 'COM3';
+    const apiPort = args[1] || (fileConfig.server && fileConfig.server.port) || 3000;
+    const webPort = args[2] || (fileConfig.web && fileConfig.web.port) || 5173;
+    
+    return { serialPort, apiPort, webPort };
+}
 
-webProcess.on('error', (err) => {
-    if (err.code === 'ENOENT') {
-        console.error(`[Launcher] [ERROR] Could not find "${npmCmd}". Is Node.js installed?`);
-    } else {
-        console.error(`[Launcher] [ERROR] Failed to start Frontend: ${err.message}`);
-    }
-});
+function startServices() {
+    isRestarting = false;
+    const { serialPort, apiPort, webPort } = readConfig();
 
-children.push(webProcess);
+    console.log('\n==================================================');
+    console.log(`SerialSync Launcher v${pkgVersion}`);
+    console.log(`Serial Port : ${serialPort}`);
+    console.log(`API Port    : ${apiPort}`);
+    console.log(`Web Port    : ${webPort}`);
+    console.log('==================================================\n');
 
-// 3. 优雅退出
-const cleanup = () => {
-    console.log('\n[Launcher] Shutting down services...');
-    children.forEach(child => {
-        try {
-            child.kill();
-        } catch (e) {
-            // ignore
+    console.log('[Launcher] Starting API Server...');
+    serverProcess = spawn('node', ['--no-deprecation', serverScript, serialPort, apiPort], {
+        cwd: projectRoot,
+        stdio: 'pipe',
+        env: { ...process.env, PORT: String(apiPort) }
+    });
+
+    serverProcess.stdout.on('data', (data) => process.stdout.write(`[Backend] ${data}`));
+    serverProcess.stderr.on('data', (data) => process.stderr.write(`[Backend] ${data}`));
+
+    serverProcess.on('exit', (code) => {
+        if (code === 42) {
+            console.log('\n[Launcher] 收到重启信号(42)，正在准备重新孵化进城...');
+            isRestarting = true;
+            if (webProcess) {
+                killProcessTree(webProcess);
+                webProcess = null;
+            }
+            // 等待端口释放后重新启动
+            setTimeout(startServices, 1500);
+        } else if (!isRestarting) {
+            console.log(`\n[Launcher] Backend exited with code ${code}`);
+            process.exit(code || 0);
         }
     });
+
+    serverProcess.on('error', (err) => {
+        console.error(`[Launcher] Failed to start Backend: ${err.message}`);
+    });
+
+    console.log('[Launcher] Starting Web UI...');
+    const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    webProcess = spawn(npmCmd, ['run', 'dev'], {
+        cwd: webDir,
+        stdio: 'pipe',
+        env: {
+            ...process.env,
+            PORT: String(webPort),
+            API_PORT: String(apiPort),
+            NODE_OPTIONS: '--no-deprecation'
+        },
+        shell: true
+    });
+
+    webProcess.stdout.on('data', (data) => {
+        process.stdout.write(`[Frontend] ${data}`);
+    });
+
+    webProcess.stderr.on('data', (data) => {
+        const msg = data.toString();
+        if (msg.includes('vite') && msg.includes('not found')) {
+            console.error('\n[Launcher] [ERROR] Frontend dependencies missing! Please run: npm install in src/web\n');
+        }
+        if (msg.includes('DeprecationWarning') || msg.includes('ws proxy socket error') || msg.includes('ECONNABORTED')) {
+            return;
+        }
+        process.stderr.write(`[Frontend] ${data}`);
+    });
+
+    webProcess.on('error', (err) => {
+        if (err.code === 'ENOENT') {
+            console.error(`[Launcher] [ERROR] Could not find "${npmCmd}". Is Node.js installed?`);
+        } else {
+            console.error(`[Launcher] [ERROR] Failed to start Frontend: ${err.message}`);
+        }
+    });
+}
+
+const cleanup = () => {
+    if (isRestarting) return;
+    console.log('\n[Launcher] Shutting down services...');
+    if (serverProcess) killProcessTree(serverProcess);
+    if (webProcess) killProcessTree(webProcess);
     process.exit(0);
 };
 
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
-process.on('exit', cleanup);
+process.on('exit', () => {
+    if (!isRestarting) {
+        if (serverProcess) killProcessTree(serverProcess);
+        if (webProcess) killProcessTree(webProcess);
+    }
+});
+
+// 启动初始服务
+startServices();

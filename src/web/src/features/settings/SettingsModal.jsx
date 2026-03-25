@@ -88,14 +88,23 @@ const SettingsModal = ({ isOpen, onClose }) => {
             const servicesVals = cfg.services || {};
             const loggingVals = cfg.logging || {};
             const serialForSystem = cfg.serial || {}; // Heartbeat is in serial
+            const serverVals = cfg.server || {};
+            const webVals = cfg.web || {};
 
             setSystemConfig(prev => ({
                 ...prev,
                 serviceDiscovery: servicesVals.autoRegister !== undefined ? servicesVals.autoRegister : true,
                 logLevel: loggingVals.level || 'info',
                 heartbeatInterval: serialForSystem.heartbeatInterval || 5000,
-                heartbeatTimeout: serialForSystem.heartbeatTimeout || 15000
+                heartbeatTimeout: serialForSystem.heartbeatTimeout || 15000,
+                apiPort: serverVals.port || 3000,
+                webPort: webVals.port || 5173
             }));
+            
+            setOriginalPorts({
+                apiPort: serverVals.port || 3000,
+                webPort: webVals.port || 5173
+            });
 
         } catch (err) {
             console.error('Failed to fetch status:', err);
@@ -110,8 +119,11 @@ const SettingsModal = ({ isOpen, onClose }) => {
         heartbeatInterval: 5000,
         heartbeatTimeout: 15000,
         serviceDiscovery: true,
-        logLevel: 'info'
+        logLevel: 'info',
+        apiPort: 3000,
+        webPort: 5173
     });
+    const [originalPorts, setOriginalPorts] = useState({ apiPort: 3000, webPort: 5173 });
 
     // Add conflictStrategy to transferConfig state initialization if not already there, 
     // but here we just ensure it's handled in the UI. 
@@ -184,7 +196,9 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 transfer: transferConfig, // Includes conflictStrategy
                 system: {
                     serviceDiscovery: systemConfig.serviceDiscovery,
-                    logLevel: systemConfig.logLevel
+                    logLevel: systemConfig.logLevel,
+                    apiPort: parseInt(systemConfig.apiPort),
+                    webPort: parseInt(systemConfig.webPort)
                 }
             };
 
@@ -194,7 +208,15 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 body: JSON.stringify(configToSave)
             });
             if (res.ok) {
-                // alert('配置已保存并生效');
+                const portsChanged = parseInt(systemConfig.apiPort) !== originalPorts.apiPort || parseInt(systemConfig.webPort) !== originalPorts.webPort;
+                if (portsChanged) {
+                    if (confirm('检测到您修改了系统服务端口配置（该级别设置需重启后台进程方可生效）。\n\n是否立即执行后台系统热重启？')) {
+                        try {
+                            await fetch('/api/system/restart', { method: 'POST' });
+                        } catch(e) {}
+                        alert(`安全重启指令已发送！\n后台调度器正在重新孵化网络进程，请耐心等待数秒。\n\n⚠️ 如果您修改了 Web UI 端口，请稍后手动在浏览器地址栏输入新的端口：\nhttp://${window.location.hostname}:${systemConfig.webPort}`);
+                    }
+                }
                 onClose();
             } else {
                 alert('保存配置失败');
@@ -230,6 +252,18 @@ const SettingsModal = ({ isOpen, onClose }) => {
             await fetch('/api/disconnect', { method: 'POST' });
         } catch (err) {
             alert('断开失败: ' + err.message);
+        }
+    };
+
+    const handleForceRestart = async () => {
+        if (confirm('警告：执行强制重启将断开所有当前正在进行的任务和网络连接。\n\n您确定要立刻重启系统的底层运行栈吗？')) {
+            try {
+                await fetch('/api/system/restart', { method: 'POST' });
+                alert('重启指令已向调度器发送！\n后台进程正在销毁并重新孵化，请稍后刷新界面。');
+                onClose();
+            } catch (err) {
+                alert('发送重启指令失败: ' + err.message);
+            }
         }
     };
 
@@ -563,6 +597,47 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                     <p className="text-[10px] text-muted-foreground">
                                         * 用于控制后台输出到控制台和日志文件的详细程度。
                                     </p>
+                                </div>
+
+                                <div className="space-y-2 pt-4 border-t border-border">
+                                    <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider mb-2">服务端口 (重启进程生效)</h4>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">API 后端端口</label>
+                                            <input
+                                                type="number"
+                                                value={systemConfig.apiPort}
+                                                onChange={(e) => setSystemConfig({ ...systemConfig, apiPort: parseInt(e.target.value) || 3000 })}
+                                                className="w-full px-2 py-1 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                            />
+                                        </div>
+                                        <div className="space-y-1">
+                                            <label className="text-xs text-muted-foreground">Web UI 端口</label>
+                                            <input
+                                                type="number"
+                                                value={systemConfig.webPort}
+                                                onChange={(e) => setSystemConfig({ ...systemConfig, webPort: parseInt(e.target.value) || 5173 })}
+                                                className="w-full px-2 py-1 rounded-md border border-input bg-background text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                            />
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="space-y-2 pt-6 border-t border-border mt-6">
+                                    <h4 className="text-xs font-semibold text-destructive uppercase tracking-wider mb-2">危险操作 (Danger Zone)</h4>
+                                    <div className="p-3 rounded-md border border-destructive/20 bg-destructive/5 flex items-center justify-between">
+                                        <div className="text-sm">
+                                            <p className="font-medium text-destructive">强制热重启系统后台流程栈</p>
+                                            <p className="text-xs text-muted-foreground mt-0.5">当修改端口或网络环境遇到卡死时，使用该功能强制重启。</p>
+                                        </div>
+                                        <button
+                                            onClick={handleForceRestart}
+                                            className="px-3 py-1.5 text-xs font-medium bg-destructive text-destructive-foreground rounded-md hover:bg-destructive/90 flex items-center gap-1.5 transition-colors"
+                                            title="立即下发重启信标：42"
+                                        >
+                                            <Power size={14} /> 强行重启
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>

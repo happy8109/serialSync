@@ -245,6 +245,14 @@ class AppController extends EventEmitter {
                     if (!currentConfig.logging) currentConfig.logging = {};
                     currentConfig.logging.level = config.system.logLevel;
                 }
+                if (config.system.apiPort !== undefined) {
+                    if (!currentConfig.server) currentConfig.server = {};
+                    currentConfig.server.port = config.system.apiPort;
+                }
+                if (config.system.webPort !== undefined) {
+                    if (!currentConfig.web) currentConfig.web = {};
+                    currentConfig.web.port = config.system.webPort;
+                }
 
                 // Save Heartbeat to file (under system or serial? let's save to serial as per file buffer inspection earlier)
                 // Actually inspection showed 'serial.heartbeatInterval'. 
