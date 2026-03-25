@@ -1,0 +1,109 @@
+{
+  "serial": {
+    "port": "COM3",
+    "baudRate": 115200,
+    "baudRateOptions": [
+      9600,
+      19200,
+      38400,
+      57600,
+      115200,
+      128000,
+      230400,
+      460800,
+      576000,
+      921600
+    ],
+    "dataBits": 8,
+    "stopBits": 1,
+    "parity": "none",
+    "rtscts": false,
+    "autoReconnect": true,
+    "reconnectInterval": 3000,
+    "maxReconnectAttempts": 0,
+    "heartbeatInterval": 5000,
+    "heartbeatTimeout": 15000,
+    "path": "COM3"
+  },
+  "transfer": {
+    "chunkSize": 2048,
+    "windowSize": 25,
+    "timeout": 5000,
+    "savePath": "./received",
+    "conflictStrategy": "overwrite"
+  },
+  "message": {
+    "maxLength": 4096
+  },
+  "system": {
+    "heartbeatInterval": 5000,
+    "heartbeatTimeout": 15000
+  },
+  "logging": {
+    "level": "info",
+    "console": true,
+    "file": true
+  },
+  "services": {
+    "enabled": true,
+    "autoRegister": true,
+    "localServices": {
+      "system_info": {
+        "name": "System Info",
+        "description": "Get system status",
+        "version": "1.0",
+        "endpoint": "http://localhost:3003/api/status",
+        "method": "GET",
+        "timeout": 10000,
+        "enabled": true,
+        "headers": {},
+        "params": {}
+      },
+      "daily_brief": {
+        "name": "每日简报",
+        "description": "获取每日统计简报",
+        "version": "1.0",
+        "endpoint": "http://localhost:3000/api/stats/daily/brief",
+        "method": "GET",
+        "timeout": 10000,
+        "enabled": true,
+        "headers": {},
+        "params": {}
+      },
+      "execute": {
+        "name": "RSE",
+        "description": "",
+        "version": "1.0",
+        "endpoint": "http://localhost:3000/api/bridge/execute",
+        "method": "POST",
+        "timeout": 10000,
+        "enabled": true,
+        "headers": {},
+        "params": {}
+      }
+    }
+  },
+  "server": {
+    "port": 3003
+  },
+  "web": {
+    "port": 5173
+  },
+  "syncTasks": [
+    {
+      "id": "task_1769660604398",
+      "name": "test",
+      "description": "测试",
+      "shareId": "CTR0YWN6",
+      "frequency": "1m",
+      "direction": "localToRemote",
+      "enabled": false,
+      "entries": [
+        {
+          "name": "Default",
+          "localPath": "C:\\Users\\Office\\Desktop\\test"
+        }
+      ]
+    }
+  ]
+}

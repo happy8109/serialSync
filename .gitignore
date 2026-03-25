@@ -42,6 +42,7 @@ logs/
 Thumbs.db
 
 # Project Specific
+config/default.json
 sync-files/
 backups/
 config/local.json

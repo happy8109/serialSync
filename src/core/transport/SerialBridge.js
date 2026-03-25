@@ -442,6 +442,15 @@ class SerialBridge extends EventEmitter {
      */
     _startHeartbeat(interval) {
         this._stopHeartbeat();
+
+        // 【关键修复】立刻发射首个 PING，不等 setInterval 的首个周期延迟。
+        // 这确保 SessionID 声明是链路上的第一个包，在任何业务帧（如 SERVICE_QUERY）
+        // 有机会抢跑之前，让对端先完成 ARQ 状态机重置。
+        if (this.isConnected && this.port) {
+            this._sendRawPing();
+            this.heartbeatWaitingPong = true;
+        }
+
         this.heartbeatTimer = setInterval(() => {
             if (!this.isConnected || !this.port) return;
 
