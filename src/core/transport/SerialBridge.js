@@ -26,6 +26,10 @@ class SerialBridge extends EventEmitter {
         this.isCongested = false;
         this.buffer = Buffer.alloc(0);
 
+        // 生成唯一的 Session ID (4字节) 标志本次运行寿命
+        this.sessionId = require('crypto').randomBytes(4);
+        this.remoteSessionId = null;
+
         // 配置
         this.reconnectTimer = null;
         this.reconnectAttempts = 0;
@@ -371,6 +375,21 @@ class SerialBridge extends EventEmitter {
                 // 心跳 PING/PONG 在 bridge 层拦截，不进入 ARQ
                 // （raw PING 的 fSeq=0 会被 ARQ 当作重复帧丢弃）
                 if (frame.type === 0x00 && frame.fSeq === 0) {
+                    // 收到心跳 PING → 检查对端 Session ID 是否变更
+                    if (frame.body && frame.body.length === 4) {
+                        const newRemoteId = frame.body.toString('hex');
+                        if (newRemoteId !== this.remoteSessionId) {
+                            if (this.remoteSessionId !== null) {
+                                bridgeLogger.warn(`[串口] 惊醒！检测到对端进程热重启 (SessionID: ${this.remoteSessionId} -> ${newRemoteId})`);
+                                bridgeLogger.warn(`[串口] 正在对 ARQ 状态机执行硬复位与归零...`);
+                                if (this.reliableLink) this.reliableLink.reset();
+                            } else {
+                                bridgeLogger.info(`[串口] 已记录初始对端会话标识 (SessionID: ${newRemoteId})`);
+                            }
+                            this.remoteSessionId = newRemoteId;
+                        }
+                    }
+
                     // 收到心跳 PING → 直接回复 raw PONG
                     this._sendRawPong();
                     continue; // 不传递给 ARQ 或上层
@@ -460,9 +479,9 @@ class SerialBridge extends EventEmitter {
     _sendRawPing() {
         if (!this.port || !this.isConnected) return;
         try {
-            const packet = PacketCodec.encode(0x00, 0, Buffer.alloc(0)); // type=0x00 = PING
+            const packet = PacketCodec.encode(0x00, 0, this.sessionId); // type=0x00 = PING
             this.port.write(packet);
-            bridgeLogger.debug(`[串口] 发送心跳 PING`);
+            bridgeLogger.debug(`[串口] 发送心跳 PING (Session: ${this.sessionId.toString('hex')})`);
         } catch (err) {
             bridgeLogger.debug(`[串口] 心跳 PING 发送失败: ${err.message}`);
         }

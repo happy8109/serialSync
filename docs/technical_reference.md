@@ -154,7 +154,10 @@ ARQ 模式下存在两层重传机制冲突：
 | `KEEPALIVE_INTERVAL` | 10000ms | 慢保活间隔 (linkReady=true) |
 | `MAX_MISS` | 3 | 连续丢失 N 次 PONG 判定断连 |
 
-**ARQ 兼容**: 心跳 PING/PONG 使用 fSeq=0 标识，在 bridge 层拦截处理，不进入 ARQ 管道（避免被当作重复帧丢弃）。
+**ARQ 兼容与会话同步 (v2.9.7 增强)**: 
+*   心跳 PING/PONG 使用 `fSeq=0` 标识，在 bridge 层拦截处理，不进入 ARQ 管道（避免被当作重复帧丢弃）。
+*   **Session ID 机制**: 为解决单端热重启导致的 ARQ 序号失步（死锁单通）问题，每次发出的 `PING` 帧均在 Payload 中携带本节点随进程启动生成的 4 字节随机 `Session ID`。
+*   **状态机硬复位**: 当一端在持续监听 `PING` 时，若比对出 `Remote Session ID` 从无到有或发生变更，即断定对端发生了物理重启。此时将触发 `ReliableLink.reset()` 进行滑动窗口和收发序号的强制代齐归零，实现**毫秒级故障自愈**。
 
 **联动机制**:
 *   `linkLost` → 清空远程服务缓存、UI 指示灯切换为橙色。
