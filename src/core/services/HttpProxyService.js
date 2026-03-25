@@ -584,13 +584,15 @@ class HttpProxyService extends EventEmitter {
                 path: parsedUrl.path,
                 method: service.method, // Try with configured method
                 headers: reqHeaders,
+                agent: false, // 禁用连接池保持，以免长时间霸占串行带宽
                 timeout: 5000 // 5s timeout
             }, res => {
                 // Any HTTP response means the target server is listening and reachable.
                 // Even 400, 404, 405, or 500 means it processed our health probe.
                 service.status = 'online';
                 service.lastCheck = Date.now();
-                res.resume(); // We don't care about the body, drain it safely
+                // 恢复为强力销毁连接，防止继续下载 Body 数据拖慢整个底层串口总线
+                res.destroy(); 
             });
 
             req.on('error', (err) => {

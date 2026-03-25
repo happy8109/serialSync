@@ -1,7 +1,7 @@
 {
   "serial": {
     "port": "COM3",
-    "baudRate": 128000,
+    "baudRate": 115200,
     "baudRateOptions": [
       9600,
       19200,
