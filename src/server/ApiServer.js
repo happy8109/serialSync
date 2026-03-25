@@ -238,6 +238,11 @@ class ApiServer {
         // 15. 网关模式 (Gateway Mode) - 透明转发
         // 支持 GET/POST 等所有方法，路径如: /api/proxy/daily_brief?date=2024
         router.all('/proxy/:serviceId', async (req, res) => {
+            // 拦截内网发出的健康探测请求，直接返回200，避免引发高耗时的真实串口级联调用
+            if (req.headers['x-health-probe']) {
+                return res.json({ status: 'ok' });
+            }
+
             const { serviceId } = req.params;
 
             // 智能提取参数

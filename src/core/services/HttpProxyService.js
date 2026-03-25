@@ -568,7 +568,7 @@ class HttpProxyService extends EventEmitter {
             const parsedUrl = url.parse(service.endpoint);
             const httpMod = parsedUrl.protocol === 'https:' ? https : http;
 
-            const reqHeaders = { ...service.headers };
+            const reqHeaders = { ...service.headers, 'x-health-probe': '1' };
             const dummyBody = '{}';
             
             if (['POST', 'PUT', 'PATCH'].includes(service.method)) {
@@ -590,7 +590,7 @@ class HttpProxyService extends EventEmitter {
                 // Even 400, 404, 405, or 500 means it processed our health probe.
                 service.status = 'online';
                 service.lastCheck = Date.now();
-                res.destroy(); // We don't care about the body
+                res.resume(); // We don't care about the body, drain it safely
             });
 
             req.on('error', (err) => {
