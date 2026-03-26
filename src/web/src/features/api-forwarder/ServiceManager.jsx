@@ -68,25 +68,21 @@ export default function ServiceManager() {
         setQuerying(true);
         addLog({ timestamp: Date.now(), level: 'info', tag: 'API', message: 'Scanning for remote services...' });
         try {
-            await fetch('/api/services/remote/query', {
+            const res = await fetch('/api/services/remote/query', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({})
             });
-            // 轮询几次获取结果
-            let attempts = 0;
-            const interval = setInterval(async () => {
-                await fetchRemoteServices();
-                attempts++;
-                if (attempts >= 5) {
-                    clearInterval(interval);
-                    setQuerying(false);
-                }
-            }, 1000);
+            const result = await res.json();
+            if (result.success && result.data) {
+                setRemoteServices(result.data);
+                addLog({ timestamp: Date.now(), level: 'info', tag: 'API', message: `发现 ${result.data.length} 个远程服务` });
+            }
         } catch (e) {
             console.error(e);
-            setQuerying(false);
             addLog({ timestamp: Date.now(), level: 'error', tag: 'API', message: 'Failed to scan remote services' });
+        } finally {
+            setQuerying(false);
         }
     };
 

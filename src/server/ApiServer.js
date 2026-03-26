@@ -208,16 +208,16 @@ class ApiServer {
             }
         });
 
-        // 12. 查询对端服务 (触发串口查询)
+        // 12. 查询对端服务 (触发串口查询，同步等待结果返回)
         router.post('/services/remote/query', async (req, res) => {
             try {
                 const filter = req.body;
-                await this.controller.queryRemoteServices(filter);
-                // 等待短暂时间让 LIST 包回来，或者直接返回成功让前端轮询/监听WebSocket
-                // 这里为了简单，返回触发成功，由前端通过 WebSocket 监听更新或轮询 GET /remote
-                res.json({ success: true, message: 'Query sent' });
+                const services = await this.controller.queryRemoteServices(filter);
+                // 直接返回查询结果，前端无需盲目轮询
+                res.json({ success: true, data: services || [] });
             } catch (err) {
-                res.status(500).json({ error: err.message });
+                // 超时或串口未连接时返回空列表而非 500，避免前端报错
+                res.json({ success: true, data: [], message: err.message });
             }
         });
 
