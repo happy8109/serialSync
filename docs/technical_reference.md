@@ -1,6 +1,8 @@
-# SerialSync 技术参考手册 (v2.9.6)
+# SerialSync 技术参考手册 (v2.9.20)
 
 本文档整合了 SerialSync 的系统架构、通信协议规范及核心性能机制。
+
+**v2.9.20 新增**: Session ID 热重启检测 + 系统级热重启 + 服务发现优化 — 详见下方 §3.7 & §3.8 & §3.9
 
 **v2.9.6 新增**: 持续性心跳握手 + UI 三态指示器 — 详见下方 §3.7
 
@@ -61,7 +63,7 @@
 
 | 层级 | TYPE | 名称 | 说明 | Body 格式 |
 | :--- | :--- | :--- | :--- | :--- |
-| **System** | `0x00` | PING | 心跳请求 | 空 |
+| **System** | `0x00` | PING | 心跳请求 | 4-byte SessionID (v2.9.17+) |
 | | `0x01` | PONG | 心跳响应 | 空 |
 | | `0x02` | HANDSHAKE | 握手 | JSON |
 | | `0x03` | ACK | 通用确认 | JSON: `{seq}` |
@@ -163,6 +165,29 @@ ARQ 模式下存在两层重传机制冲突：
 *   `linkLost` → 清空远程服务缓存、UI 指示灯切换为橙色。
 *   `linkReady` → 自动触发服务发现和同步发现、UI 指示灯切换为绿色。
 *   UI 三态指示器：🟢 对端在线 / 🟠 等待对端 / 🔴 串口断开。
+
+### 3.8 系统级热重启 (v2.9.15)
+`launcher.js` 作为进程孵化器，管理后端 API Server 和前端 Vite 开发服务器的完整生命周期。
+
+**重启机制**:
+*   后端 API Server 提供 `POST /api/system/restart` 端点。
+*   收到重启指令后，后端以退出码 `42` 退出。
+*   `launcher.js` 捕获退出码 `42`，先终止前端进程，等待 1.5 秒端口释放后，重新孵化整个服务栈。
+
+**跨平台进程树清理**:
+
+| 平台 | 清理策略 | 
+| :--- | :--- |
+| **Windows** | `taskkill /pid <PID> /T /F` — 强制终止进程树 |
+| **Linux/macOS** | `process.kill(-PGID, 'SIGTERM')` — 向进程组广播信号；降级使用 `pgrep -P` 遍历子进程；500ms 后 SIGKILL 兜底 |
+
+**关键设计**: Linux 下 webProcess 使用 `detached: true` 创建独立进程组，确保 `kill(-PGID)` 能命中 npm → sh → vite 整棵进程树。
+
+### 3.9 服务发现优化 (v2.9.20)
+"服务发现"按钮由盲目轮询改为同步等待串口查询结果：
+*   **后端**：`POST /services/remote/query` 路由 `await` `queryRemoteServices()` 的 Promise，对端回复 `SERVICE_LIST` 后直接将结果返回给前端。超时或未连接时优雅降级返回空数组。
+*   **前端**：`handleQueryRemote` 直接从 POST 响应中取出 `data` 更新 UI，消除了原来的 5 次×1 秒盲轮询。
+*   **后台自动发现**（每 60 秒广播）保持不变，与手动发现互不影响。
 
 ---
 

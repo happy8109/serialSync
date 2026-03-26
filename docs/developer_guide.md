@@ -6,7 +6,7 @@
 
 ## 1. 项目状态与路线图 (Roadmap)
 
-**当前版本**: v2.9.7 (V2 Refactoring Completed)
+**当前版本**: v2.9.20
 
 ### 已完成功能 (Phase 1-4)
 - [x] **核心传输层**: PacketCodec (COBS/CRC), SerialBridge, PacketScheduler (QoS)。
@@ -15,6 +15,9 @@
 - [x] **Web UI**: 统一 IM 风格聊天界面，集成文件传输、历史记录持久化、实时速度显示。 (v2.5)
 - [x] **心跳握手**: 持续性 PING 心跳取代盲等计时器，支持任意时序启动和断线重连。 (v2.9.5)
 - [x] **UI 三态指示器**: 绿(对端在线)/橙(等待对端)/红(串口断开)。 (v2.9.6)
+- [x] **Session ID 热重启检测**: PING 携带 4 字节随机会话标识，检测对端重启后自动重置 ARQ 状态机。 (v2.9.17)
+- [x] **系统级热重启**: 前端触发后端重启，跨平台进程树清理，支持端口配置热修改。 (v2.9.15)
+- [x] **服务发现优化**: “服务发现”按钮同步等待串口查询结果直接返回，消除盲轮询延迟。 (v2.9.20)
 
 ### 未来计划 (Phase 5 - Air-gap Bridge)
 - [ ] **v2.6 隔离网络数据摆渡**: 
@@ -114,6 +117,14 @@ CLI 启动后进入交互式 REPL 模式。
 ---
 
 ## 5. 最近变更 (Changelog Summary)
+
+**2026-03-26 (v2.9.20) - Session ID & Hot-Restart & Service Discovery**
+*   **Session ID 热重启检测 (v2.9.17)**: `SerialBridge` 启动时生成 4 字节随机 `Session ID`，通过 PING 心跳帧携带。对端检测到 ID 变更时自动触发 `ReliableLink.reset()` 重置 ARQ 状态机，彻底解决单端热重启导致的单通假死。
+*   **竞态条件修复 (v2.9.18)**: `_startHeartbeat` 在 `setInterval` 前立即发射首个 PING，消除了业务帧在 SessionID 声明前抢跑导致的 ARQ 虚假确认死锁。
+*   **系统级热重启 (v2.9.15)**: 构建“后端自杀接口” (`POST /api/system/restart`)，退出码 42 触发 launcher 重新孵化。UI 设置界面新增端口配置与“强行重启”按钮。
+*   **Linux 进程树清理 (v2.9.19)**: `killProcessTree` 重写，使用 `process.kill(-PGID)` + `detached: true` + `pgrep` 降级 + SIGKILL 兜底，解决 Vite 孙子进程霸占端口的问题。
+*   **服务发现优化 (v2.9.20)**: “服务发现”按钮改为同步等待串口查询结果直接返回，消除盲轮询延迟。
+*   **健康探测修复**: `HttpProxyService` 健康探测的 `res.resume()` 回退为 `res.destroy()` + `agent: false`，彻底解决 Keep-Alive 套接字残留导致串口通讯假死与单通的恶性 Bug。
 
 **2026-03-04 (v2.9.7) - V2 Refactoring Completed**
 *   **代码清理**: 彻底删除重构前的 `src_legacy` 旧代码，V2 版本重构全部完成。

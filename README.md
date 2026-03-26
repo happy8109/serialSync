@@ -1,6 +1,6 @@
-# SerialSync - 串口通信与文件同步工具 (v2.9.7)
+# SerialSync - 串口通信与文件同步工具 (v2.9.20)
 
-![Version](https://img.shields.io/badge/version-2.9.7-blue.svg)
+![Version](https://img.shields.io/badge/version-2.9.20-blue.svg)
 ![Node](https://img.shields.io/badge/node-%3E%3D16.0.0-green.svg)
 ![Platform](https://img.shields.io/badge/platform-windows%20%7C%20linux%20%7C%20kylin-orange.svg)
 
@@ -9,12 +9,14 @@ SerialSync 是一个基于 Node.js 的现代化串口通信与文件同步工具
 ## ✨ 核心特性
 
 - **高可靠传输**：采用 **COBS** 衬垫编码与 **CRC-16** 校验，彻底消除粘包与数据溢出。支持 **ARQ 可靠传输层** 自动重传，帧丢失率接近零。
+- **热重启自愈**：PING 帧携带 Session ID，单端重启后自动检测并重置 ARQ 状态机，秒级恢复双通。
 - **现代化 Web UI**：
   - **50/50 布局**：聊天区域与工具/同步面板等宽显示，视野更均衡。
   - **实时任务流**：四列日志展示（System, File, API, Sync），支持独立滚动与像素级对齐。
 - **API 转发 (Gateway)**：支持透明代理，通过串口远程调用对端的 HTTP 服务。
 - **文件同步 (Sync)**：支持局域网/串口双模式同步，具备智能冲突检测。
 - **断点续传**：基于单重传块的选择性重传机制，支持大文件高效稳定传输。
+- **系统热重启**：Web UI 支持修改端口配置并一键重启，跨平台进程树清理。
 
 ## 🚀 快速开始
 
