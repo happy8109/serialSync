@@ -64,6 +64,14 @@ function readConfig() {
     let fileConfig = {};
     try {
         const configPath = path.join(projectRoot, 'config', 'default.json');
+        const examplePath = path.join(projectRoot, 'config', 'default.json.example');
+
+        // 首次运行：从模板自动生成配置文件
+        if (!fs.existsSync(configPath) && fs.existsSync(examplePath)) {
+            fs.copyFileSync(examplePath, configPath);
+            console.log('[Launcher] 首次运行：已从 default.json.example 生成配置文件 default.json');
+        }
+
         if (fs.existsSync(configPath)) {
             fileConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
         }
