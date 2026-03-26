@@ -25,23 +25,45 @@ SerialSync 是一个基于 Node.js 的现代化串口通信与文件同步工具
   > [!NOTE]
   > v18.16.1 是 Windows 7 可用的最后一个稳定版本，具有最佳的兼容性。
 
-### 安装与运行
-本项目采用自动化依赖管理，一次安装即可同步配置前端与后端。
-
-```powershell
-# 1. 安装所有依赖 (含自动执行前端安装)
+### 安装
+```bash
+# 安装所有依赖 (含自动执行前端安装)
 npm install
-
-# 2. 启动应用 (标准模式：全功能运行)
-npm run app
-
-# 3. 环境清理 (如需更换 Node 版本或解决锁定)
-npm run clean
 ```
 
-### 访问地址
-- **本地**: `http://localhost:5174`
-- **局域网**: `http://<Your-IP>:5174` (支持移动端/其他电脑访问)
+### 模式一：开发模式 (日常开发调试)
+后端 + Vite 前端热更新，改代码即时生效。
+```bash
+npm run app
+```
+- Web UI: `http://localhost:5173`
+- API 端口与 Web 端口分离，支持 Vite HMR
+
+### 模式二：裸机生产运行 (无需 PM2)
+构建前端后直接启动后端（后端自动托管构建产物）。
+```bash
+npm run build   # 构建前端 (代码更新后执行一次)
+npm run prod    # 启动生产服务 (秒开)
+```
+- 仅占用一个端口（默认 3003），API + 前端静态资源统一托管
+- 适合不想引入额外工具的简易部署
+
+### 模式三：PM2 生产部署 (推荐)
+交给 PM2 管理，支持自动重启、日志轮转、开机启动。
+```bash
+npm run build                    # 构建前端 (代码更新后执行一次)
+npm run deploy                   # 启动 PM2
+pm2 status                      # 查看状态
+pm2 logs serialsync             # 查看日志
+pm2 restart serialsync          # 重启 (无需重新 build)
+pm2 stop serialsync             # 停止
+pm2 startup                     # 设置开机自启
+```
+
+### 环境清理
+```bash
+npm run clean    # 杀掉 Node 进程并清理 node_modules
+```
 
 ## 📁 目录结构
 
@@ -54,7 +76,8 @@ serial-sync/
 │   ├── core/           # 传输协议核心 (PacketCodec, ReliableLink, Scheduler)
 │   ├── server/         # API Server 逻辑 (Express & WebSocket)
 │   ├── web/            # React 前端代码 (Vite & TailwindCSS)
-│   └── launcher.js     # 多进程启动器
+│   └── launcher.js     # 开发模式多进程启动器
+├── ecosystem.config.js # PM2 生产部署配置
 └── package.json        # 项目配置与自动化钩子
 ```
 

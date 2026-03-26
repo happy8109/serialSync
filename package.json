@@ -1,6 +1,6 @@
 {
   "name": "serial-sync",
-  "version": "2.9.21",
+  "version": "2.9.23",
   "description": "串口通信同步程序",
   "main": "src/index.js",
   "scripts": {
@@ -8,6 +8,9 @@
     "dev": "nodemon src/index.js",
     "cli": "node src/cli.js",
     "app": "node src/launcher.js",
+    "build": "npm --prefix src/web run build",
+    "prod": "node src/server/index.js --production",
+    "deploy": "pm2 start ecosystem.config.js",
     "clean": "node scripts/clean.js",
     "postinstall": "cd src/web && npm install",
     "lint": "eslint src/",

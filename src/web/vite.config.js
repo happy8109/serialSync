@@ -87,7 +87,7 @@ export default defineConfig(({ mode }) => {
             rollupOptions: {
                 output: {
                     manualChunks: {
-                        vendor: ['react', 'react-dom', 'react-router-dom', 'zustand', 'axios'],
+                        vendor: ['react', 'react-dom', 'zustand', 'axios'],
                     }
                 }
             }

@@ -35,6 +35,16 @@ class ApiServer {
     _initMiddleware() {
         this.app.use(cors());
         this.app.use(express.json({ limit: '1mb' }));
+
+        // 生产模式：托管前端构建产物 (src/web/dist)
+        // 仅当 NODE_ENV=production 且 dist 目录存在时启用
+        // 开发模式即使存在 dist 也不会误触发，前端始终由 Vite dev server 提供
+        const distPath = path.join(__dirname, '..', 'web', 'dist');
+        if (process.env.NODE_ENV === 'production' && fs.existsSync(distPath)) {
+            this.logger.info(`生产模式：托管前端静态资源 ${distPath}`);
+            this.app.use(express.static(distPath));
+            this._servingStatic = true;
+        }
     }
 
     _setupRoutes() {
@@ -98,14 +108,20 @@ class ApiServer {
             }
         });
 
-        // 4.5. 触发系统冷启动热重启
+        // 4.5. 触发系统重启（智能适配运行模式）
         router.post('/system/restart', (req, res) => {
-            this.logger.info('Received restart command via API. Exiting with code 42.');
             res.json({ success: true, message: 'Restarting...' });
             
-            // 给前端一点时间接收 HTTP 200 返回，然后再自杀
             setTimeout(() => {
-                process.exit(42);
+                if (process.env.NODE_ENV === 'production') {
+                    // 生产模式：exit(0) 触发 index.js 看门狗 或 PM2 自动重启
+                    this.logger.info('生产模式重启：退出等待看门狗重新孵化...');
+                    process.exit(0);
+                } else {
+                    // 开发模式：exit(42) 触发 launcher.js 重新孵化
+                    this.logger.info('开发模式重启：退出码 42 触发 launcher 重新孵化');
+                    process.exit(42);
+                }
             }, 500);
         });
 
@@ -373,6 +389,14 @@ class ApiServer {
     }
 
     start() {
+        // 生产模式 SPA 兜底：所有未匹配的路由返回 index.html（支持前端路由）
+        if (this._servingStatic) {
+            const distPath = path.join(__dirname, '..', 'web', 'dist');
+            this.app.get('*', (req, res) => {
+                res.sendFile(path.join(distPath, 'index.html'));
+            });
+        }
+
         this.server.listen(this.port, () => {
             this.logger.info(`API Server running on http://localhost:${this.port}`);
         });
