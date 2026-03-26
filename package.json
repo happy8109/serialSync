@@ -1,6 +1,6 @@
 {
   "name": "serial-sync",
-  "version": "2.9.18",
+  "version": "2.9.19",
   "description": "串口通信同步程序",
   "main": "src/index.js",
   "scripts": {

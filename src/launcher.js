@@ -24,16 +24,35 @@ let serverProcess = null;
 let webProcess = null;
 let isRestarting = false;
 
-// 跨平台杀掉进程树（解决 Windows 遗留孤儿进程霸占端口的问题）
+// 跨平台杀掉进程树（解决 Windows/Linux 遗留孤儿进程霸占端口的问题）
 function killProcessTree(proc) {
-    if (!proc) return;
+    if (!proc || !proc.pid) return;
+    const pid = proc.pid;
     try {
         if (process.platform === 'win32') {
             const { execSync } = require('child_process');
-            execSync(`taskkill /pid ${proc.pid} /T /F`, { stdio: 'ignore' });
+            execSync(`taskkill /pid ${pid} /T /F`, { stdio: 'ignore' });
         } else {
-            // Linux/macOS 下常规 SIGTERM 可以正常传递并杀死子进程
-            proc.kill('SIGTERM');
+            // Linux/macOS: 先尝试用进程组信号杀整棵树 (kill -SIGTERM -- -PGID)
+            // spawn with shell:true 会创建进程组，PGID 通常等于父 PID
+            try {
+                process.kill(-pid, 'SIGTERM');
+            } catch (e1) {
+                // 如果 PGID 方式失败，则遍历 /proc 手动查找并杀掉所有子进程
+                try {
+                    const { execSync } = require('child_process');
+                    const children = execSync(`pgrep -P ${pid}`, { encoding: 'utf8' }).trim().split('\n');
+                    children.filter(Boolean).forEach(childPid => {
+                        try { process.kill(parseInt(childPid), 'SIGTERM'); } catch (e) {}
+                    });
+                } catch (e2) { /* pgrep may fail if no children, that's fine */ }
+                try { proc.kill('SIGTERM'); } catch (e) {}
+            }
+            // 兜底：500ms 后对残留进程补发 SIGKILL
+            setTimeout(() => {
+                try { process.kill(-pid, 'SIGKILL'); } catch (e) {}
+                try { proc.kill('SIGKILL'); } catch (e) {}
+            }, 500);
         }
     } catch (e) {
         try { proc.kill('SIGKILL'); } catch (err) {}
@@ -102,6 +121,7 @@ function startServices() {
 
     console.log('[Launcher] Starting Web UI...');
     const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const isWindows = process.platform === 'win32';
     webProcess = spawn(npmCmd, ['run', 'dev'], {
         cwd: webDir,
         stdio: 'pipe',
@@ -111,7 +131,8 @@ function startServices() {
             API_PORT: String(apiPort),
             NODE_OPTIONS: '--no-deprecation'
         },
-        shell: true
+        shell: true,
+        detached: !isWindows // Linux/macOS: 创建独立进程组，以便 kill(-PGID) 能命中整棵树
     });
 
     webProcess.stdout.on('data', (data) => {
