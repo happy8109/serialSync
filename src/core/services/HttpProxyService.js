@@ -356,11 +356,52 @@ class HttpProxyService extends EventEmitter {
             return this._sendResult(id, 500, null, `Service disabled: ${service}`);
         }
 
+        // Meta Extraction
+        let endpoint = svc.endpoint;
+        let method = svc.method;
+        let targetHeaders = { ...svc.headers };
+        let reqBody = null;
+
+        // Extract metadata from params
+        if (params.__gateway) {
+            if (svc.mode === 'gateway') {
+                const gatewayMeta = params.__gateway;
+                method = gatewayMeta.method || 'GET';
+                
+                if (gatewayMeta.path) {
+                    const baseUrl = endpoint.replace(/\/+$/, '');
+                    const subPath = gatewayMeta.path.startsWith('/') ? gatewayMeta.path : `/${gatewayMeta.path}`;
+                    endpoint = `${baseUrl}${subPath}`;
+                }
+            }
+            delete params.__gateway;
+        }
+
+        if (params.__headers) {
+            // Merge headers (excluding host and connection to avoid conflicts)
+            const inboundHeaders = params.__headers;
+            const skipHeaders = ['host', 'connection', 'content-length'];
+            for (const [k, v] of Object.entries(inboundHeaders)) {
+                if (!skipHeaders.includes(k.toLowerCase())) {
+                    targetHeaders[k] = v;
+                }
+            }
+            delete params.__headers;
+        }
+
+        if (params.__body !== undefined) {
+            reqBody = params.__body;
+            delete params.__body;
+        }
+
         // 2. HTTP Call
         try {
-            const result = await this.callLocalHttp(svc.endpoint, params, {
-                method: svc.method,
-                headers: svc.headers,
+            // For gateway mode with explicit body, we pass it down
+            const callParams = reqBody !== null ? reqBody : params;
+            
+            const result = await this.callLocalHttp(endpoint, callParams, {
+                method: method,
+                headers: targetHeaders,
                 timeout: svc.timeout
             });
 
