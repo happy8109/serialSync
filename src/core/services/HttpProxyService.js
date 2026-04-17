@@ -139,6 +139,7 @@ class HttpProxyService extends EventEmitter {
             description: config.description || '',
             version: config.version || '1.0',
             endpoint: config.endpoint,
+            mode: config.mode || 'exact',
             method: config.method || 'GET',
             timeout: config.timeout || 10000,
             headers: config.headers || {},
@@ -171,7 +172,7 @@ class HttpProxyService extends EventEmitter {
 
             // Update localServices from memory
             for (const [id, svc] of this.localServices) {
-                currentConfig.services.localServices[id] = {
+                const entry = {
                     name: svc.name,
                     description: svc.description,
                     version: svc.version,
@@ -182,6 +183,8 @@ class HttpProxyService extends EventEmitter {
                     headers: svc.headers,
                     params: svc.params
                 };
+                if (svc.mode === 'gateway') entry.mode = 'gateway';
+                currentConfig.services.localServices[id] = entry;
             }
 
             fs.writeFileSync(this.configPath, JSON.stringify(currentConfig, null, 2), 'utf8');
@@ -486,6 +489,7 @@ class HttpProxyService extends EventEmitter {
             name: s.name,
             description: s.description,
             version: s.version,
+            mode: s.mode,          // 对端需要知道是否为网关模式
             method: s.method,
             enabled: s.enabled,
             params: s.params,
@@ -532,6 +536,7 @@ class HttpProxyService extends EventEmitter {
             name: s.name,
             description: s.description,
             endpoint: s.endpoint,
+            mode: s.mode,          // 暴露 mode 给前端
             method: s.method,
             enabled: s.enabled,
             status: s.status
