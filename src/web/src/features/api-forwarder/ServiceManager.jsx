@@ -174,14 +174,34 @@ export default function ServiceManager() {
     };
 
     const copyToClipboard = (text, id) => {
-        navigator.clipboard.writeText(text);
-        setCopiedId(id);
-        setTimeout(() => setCopiedId(null), 2000);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => {
+                setCopiedId(id);
+                setTimeout(() => setCopiedId(null), 2000);
+            }).catch(e => console.error(e));
+        } else {
+            const textArea = document.createElement('textarea');
+            textArea.value = text;
+            textArea.style.position = 'fixed';
+            textArea.style.left = '-999999px';
+            textArea.style.top = '-999999px';
+            document.body.appendChild(textArea);
+            textArea.focus();
+            textArea.select();
+            try {
+                document.execCommand('copy');
+                setCopiedId(id);
+                setTimeout(() => setCopiedId(null), 2000);
+            } catch (err) {
+                console.error('Fallback copy failed', err);
+            }
+            document.body.removeChild(textArea);
+        }
     };
 
     const getProxyUrl = (service) => {
         const base = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/api/proxy/${service.id}`;
-        return service.mode === 'gateway' ? `${base}/*` : base;
+        return service.mode === 'gateway' ? `${base}/` : base;
     };
 
     return (
