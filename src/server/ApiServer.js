@@ -111,7 +111,7 @@ class ApiServer {
         // 4.5. 触发系统重启（智能适配运行模式）
         router.post('/system/restart', (req, res) => {
             res.json({ success: true, message: 'Restarting...' });
-            
+
             setTimeout(() => {
                 if (process.env.NODE_ENV === 'production') {
                     // 生产模式：exit(0) 触发 index.js 看门狗 或 PM2 自动重启
@@ -264,16 +264,25 @@ class ApiServer {
 
         // 15. 网关模式 (Gateway Mode) - 透明转发
         // 支持 GET/POST 等所有方法，路径如: /api/proxy/daily_brief?date=2024
+
+        // 透明返回结果的辅助函数
+        const _transparentResponse = (res, result) => {
+            try {
+                const json = JSON.parse(result);
+                res.json(json);
+            } catch (e) {
+                res.send(result);
+            }
+        };
+
+        // 15a. 精确模式路由 (无子路径)
         router.all('/proxy/:serviceId', async (req, res) => {
             const { serviceId } = req.params;
 
-            // 拦截内网发出的健康探测请求，避免引发高耗时的真实串口级联调用
+            // 拦截内网发出的健康探测请求
             if (req.headers['x-health-probe']) {
-                // 检查请求的服务是否在当前节点的“本地服务”或“对端映射过来的远程服务”缓存字典中存在
-                // 这既保证了不产生真实的串口阻塞包，又实现了真实的“服务可用性接力验证”
                 const isLocal = this.controller.getLocalServices().some(s => s.id === serviceId);
                 const isRemote = this.controller.getRemoteServices().some(s => s.id === serviceId);
-                
                 if (isLocal || isRemote) {
                     return res.json({ status: 'ok', serviceId, available: true });
                 } else {
@@ -291,20 +300,48 @@ class ApiServer {
             }
 
             try {
-                // 发起远程调用
                 const result = await this.controller.pullService(serviceId, params);
-
-                // 透明返回结果
-                // 1. 如果结果是 JSON 字符串，尝试解析并以 JSON 格式返回
-                try {
-                    const json = JSON.parse(result);
-                    res.json(json);
-                } catch (e) {
-                    // 2. 否则直接返回原始内容 (可能是纯文本或HTML)
-                    res.send(result);
-                }
+                _transparentResponse(res, result);
             } catch (err) {
-                // 网关错误
+                res.status(502).send({ error: err.message });
+            }
+        });
+
+        // 15b. 网关模式路由 (带子路径): /api/proxy/ollama/api/tags → path="/api/tags"
+        router.all('/proxy/:serviceId/*', async (req, res) => {
+            const { serviceId } = req.params;
+            const subPath = '/' + req.params[0];
+
+            // 健康探测拦截
+            if (req.headers['x-health-probe']) {
+                const isLocal = this.controller.getLocalServices().some(s => s.id === serviceId);
+                const isRemote = this.controller.getRemoteServices().some(s => s.id === serviceId);
+                if (isLocal || isRemote) {
+                    return res.json({ status: 'ok', serviceId, available: true });
+                } else {
+                    return res.status(503).json({ error: 'Service Unavailable', serviceId, available: false });
+                }
+            }
+
+            // 智能提取参数
+            let params = {};
+            if (Object.keys(req.query).length > 0) {
+                params = { ...req.query };
+            }
+            if (req.body && Object.keys(req.body).length > 0) {
+                params = { ...params, ...req.body };
+            }
+
+            // 注入网关元数据
+            params.__gateway = {
+                path: subPath,
+                method: req.method
+            };
+
+            try {
+                const result = await this.controller.pullService(serviceId, params);
+                _transparentResponse(res, result);
+            } catch (err) {
                 res.status(502).send({ error: err.message });
             }
         });

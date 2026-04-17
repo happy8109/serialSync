@@ -19,6 +19,7 @@ export default function ServiceManager() {
         name: '',
         description: '',
         endpoint: 'http://localhost:8080/api/example',
+        mode: 'exact',
         method: 'GET',
         enabled: true
     });
@@ -114,6 +115,7 @@ export default function ServiceManager() {
                 name: '',
                 description: '',
                 endpoint: 'http://localhost:8080/api/example',
+                mode: 'exact',
                 method: 'GET',
                 enabled: true
             });
@@ -129,6 +131,7 @@ export default function ServiceManager() {
             name: service.name || '',
             description: service.description || '',
             endpoint: service.endpoint || '',
+            mode: service.mode || 'exact',
             method: service.method || 'GET',
             enabled: service.enabled !== false
         });
@@ -176,8 +179,9 @@ export default function ServiceManager() {
         setTimeout(() => setCopiedId(null), 2000);
     };
 
-    const getProxyUrl = (serviceId) => {
-        return `${window.location.protocol}//${window.location.hostname}:${window.location.port}/api/proxy/${serviceId}`;
+    const getProxyUrl = (service) => {
+        const base = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/api/proxy/${service.id}`;
+        return service.mode === 'gateway' ? `${base}/*` : base;
     };
 
     return (
@@ -220,6 +224,7 @@ export default function ServiceManager() {
                                     name: '',
                                     description: '',
                                     endpoint: 'http://localhost:8080/api/example',
+                                    mode: 'exact',
                                     method: 'GET',
                                     enabled: true
                                 });
@@ -258,8 +263,12 @@ export default function ServiceManager() {
                                         <div className="text-xs text-muted-foreground mt-0.5 font-mono">{service.id}</div>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                        <div className="text-xs bg-muted px-1.5 py-0.5 rounded text-muted-foreground group-hover:bg-blue-500/10 group-hover:text-blue-500 transition-colors">
-                                            {service.method}
+                                        <div className="flex gap-1">
+                                            {service.mode === 'gateway' ? (
+                                                <div className="text-[10px] bg-orange-500/10 border border-orange-500/20 px-1.5 py-0.5 rounded text-orange-500 font-medium">Gateway</div>
+                                            ) : (
+                                                <div className="text-[10px] bg-muted border border-border/50 px-1.5 py-0.5 rounded text-muted-foreground font-medium">{service.method}</div>
+                                            )}
                                         </div>
                                         <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                             <button
@@ -302,7 +311,7 @@ export default function ServiceManager() {
                             </div>
                         )}
                         {remoteServices.map(service => {
-                            const proxyUrl = getProxyUrl(service.id);
+                            const proxyUrl = getProxyUrl(service);
                             return (
                                 <div key={service.id} className="bg-card border border-border/50 rounded-lg p-3 hover:border-orange-500/30 transition-colors flex flex-col gap-3">
                                     <div className="flex justify-between items-start">
@@ -318,6 +327,9 @@ export default function ServiceManager() {
                                                     <span className="w-2 h-2 rounded-full bg-muted-foreground/50 border border-muted-foreground" title="远程服务已禁用"></span>
                                                 )}
                                                 {service.name || service.id}
+                                                {service.mode === 'gateway' && (
+                                                    <span className="ml-1 text-[10px] bg-orange-500/10 border border-orange-500/20 px-1.5 py-0.5 rounded-full text-orange-500 uppercase tracking-tighter">Gateway</span>
+                                                )}
                                             </div>
                                             <div className="text-xs text-muted-foreground mt-0.5">{service.description || '暂无描述'}</div>
                                         </div>
@@ -400,17 +412,32 @@ export default function ServiceManager() {
                             </div>
                             <div className="grid grid-cols-2 gap-4">
                                 <div className="space-y-1">
-                                    <label className="text-xs font-medium text-muted-foreground">请求方法</label>
+                                    <label className="text-xs font-medium text-muted-foreground">代理模式</label>
                                     <select
                                         className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
-                                        value={newService.method}
-                                        onChange={e => setNewService({ ...newService, method: e.target.value })}
+                                        value={newService.mode}
+                                        onChange={e => setNewService({ ...newService, mode: e.target.value })}
                                     >
-                                        <option value="GET">GET</option>
-                                        <option value="POST">POST</option>
-                                        <option value="PUT">PUT</option>
+                                        <option value="exact">精确路由 (Exact)</option>
+                                        <option value="gateway">网关透传 (Base URL)</option>
                                     </select>
                                 </div>
+                                {newService.mode !== 'gateway' && (
+                                    <div className="space-y-1">
+                                        <label className="text-xs font-medium text-muted-foreground">请求方法</label>
+                                        <select
+                                            className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-1 focus:ring-primary"
+                                            value={newService.method}
+                                            onChange={e => setNewService({ ...newService, method: e.target.value })}
+                                        >
+                                            <option value="GET">GET</option>
+                                            <option value="POST">POST</option>
+                                            <option value="PUT">PUT</option>
+                                            <option value="DELETE">DELETE</option>
+                                            <option value="PATCH">PATCH</option>
+                                        </select>
+                                    </div>
+                                )}
                             </div>
                             <div className="space-y-1">
                                 <label className="text-xs font-medium text-muted-foreground">功能描述</label>

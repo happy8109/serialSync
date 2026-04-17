@@ -570,7 +570,7 @@ class HttpProxyService extends EventEmitter {
 
             const reqHeaders = { ...service.headers, 'x-health-probe': '1' };
             const dummyBody = '{}';
-            
+
             if (['POST', 'PUT', 'PATCH'].includes(service.method)) {
                 if (!reqHeaders['content-type'] && !reqHeaders['Content-Type']) {
                     reqHeaders['Content-Type'] = 'application/json';
@@ -592,7 +592,7 @@ class HttpProxyService extends EventEmitter {
                 service.status = 'online';
                 service.lastCheck = Date.now();
                 // 恢复为强力销毁连接，防止继续下载 Body 数据拖慢整个底层串口总线
-                res.destroy(); 
+                res.destroy();
             });
 
             req.on('error', (err) => {
