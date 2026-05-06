@@ -62,17 +62,6 @@ const TransferList = () => {
         }
     };
 
-    const handleOpen = async (path) => {
-        try {
-            await fetch('/api/open', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path })
-            });
-        } catch (err) {
-            console.error('Failed to open file:', err);
-        }
-    };
 
     return (
         <div className="flex flex-col h-full p-6 gap-6 overflow-hidden">
@@ -99,7 +88,6 @@ const TransferList = () => {
                             onPause={handlePause}
                             onResume={handleResume}
                             onCancel={handleCancel}
-                            onOpen={handleOpen}
                         />
                     ))}
                 </div>

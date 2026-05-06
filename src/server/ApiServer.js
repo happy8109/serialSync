@@ -182,10 +182,42 @@ class ApiServer {
         });
 
         router.post('/open-folder', async (req, res) => {
-            const { path } = req.body;
-            if (!path) return res.status(400).json({ error: 'Path is required' });
-            const result = await this.controller.showInFolder(path);
+            const { path: targetPath } = req.body;
+            if (!targetPath) return res.status(400).json({ error: 'Path is required' });
+            const result = await this.controller.showInFolder(targetPath);
             res.json(result);
+        });
+
+        // 9.5 文件下载（供远程浏览器端下载已接收的文件）
+        router.get('/download', (req, res) => {
+            const filePath = req.query.path;
+            if (!filePath) return res.status(400).json({ error: 'Path is required' });
+
+            // 安全校验：仅允许下载 savePath（received/）目录内的文件，防止路径穿越
+            const savePath = this.controller.fileTransferService.savePath;
+            const resolvedSavePath = path.resolve(savePath);
+            const resolvedFilePath = path.resolve(filePath);
+
+            if (!resolvedFilePath.startsWith(resolvedSavePath + path.sep) && resolvedFilePath !== resolvedSavePath) {
+                this.logger.warn(`Download rejected (path traversal attempt): ${filePath}`);
+                return res.status(403).json({ error: '禁止访问该路径' });
+            }
+
+            if (!fs.existsSync(resolvedFilePath)) {
+                return res.status(404).json({ error: '文件不存在或已被移动' });
+            }
+
+            const stat = fs.statSync(resolvedFilePath);
+            if (!stat.isFile()) {
+                return res.status(400).json({ error: '目标不是文件' });
+            }
+
+            res.download(resolvedFilePath, path.basename(resolvedFilePath), (err) => {
+                if (err && !res.headersSent) {
+                    this.logger.error(`Download failed: ${resolvedFilePath}`, err);
+                    res.status(500).json({ error: '文件下载失败' });
+                }
+            });
         });
 
         router.get('/utils/select-folder', async (req, res) => {

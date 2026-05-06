@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { FileText, File, FileArchive, FileImage, FileCode, CheckCircle2, XCircle, AlertCircle, Loader2, FolderOpen, Pause, Play, Square, ExternalLink } from 'lucide-react';
+import { FileText, File, FileArchive, FileImage, FileCode, CheckCircle2, XCircle, AlertCircle, Loader2, Download, Pause, Play, Square } from 'lucide-react';
 import useAppStore from '../../store/appStore';
 import { cn } from '../../lib/utils';
 
@@ -42,39 +42,15 @@ const FileBubble = ({ transferId, isLocal }) => {
         return `${formatSize(bytesPerSec || 0)}/s`;
     };
 
-    const handleOpenFile = async () => {
+    const handleDownload = () => {
         if (!fullPath) return;
-        try {
-            const response = await fetch('/api/open', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: fullPath })
-            });
-            const result = await response.json();
-            if (!result.success) {
-                // 如果文件不存在，仅更新气泡显示错误，不发送聊天流消息
-                updateTransfer(transferId, { status: 'failed', error: result.error });
-            }
-        } catch (e) {
-            console.error('Failed to open file', e);
-        }
-    };
-
-    const handleOpenFolder = async () => {
-        if (!fullPath) return;
-        try {
-            const response = await fetch('/api/open-folder', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: fullPath })
-            });
-            const result = await response.json();
-            if (!result.success) {
-                updateTransfer(transferId, { status: 'failed', error: result.error });
-            }
-        } catch (e) {
-            console.error('Failed to open folder', e);
-        }
+        // 通过创建隐藏链接触发浏览器原生下载
+        const a = document.createElement('a');
+        a.href = `/api/download?path=${encodeURIComponent(fullPath)}`;
+        a.download = name || 'file';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
     };
 
     const handleAction = async (action) => {
@@ -203,32 +179,18 @@ const FileBubble = ({ transferId, isLocal }) => {
 
                 {/* Actions */}
                 {status === 'completed' && !isLocal && fullPath && (
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={(e) => { e.stopPropagation(); handleOpenFile(); }}
-                            className={cn(
-                                "flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors shadow-sm",
-                                isLocal
-                                    ? "bg-primary-foreground/10 hover:bg-primary-foreground/20 text-primary-foreground"
-                                    : "bg-secondary hover:bg-secondary/80 text-secondary-foreground"
-                            )}
-                        >
-                            <ExternalLink size={10} />
-                            打开文件
-                        </button>
-                        <button
-                            onClick={(e) => { e.stopPropagation(); handleOpenFolder(); }}
-                            className={cn(
-                                "flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors shadow-sm",
-                                isLocal
-                                    ? "bg-primary-foreground/10 hover:bg-primary-foreground/20 text-primary-foreground"
-                                    : "bg-secondary hover:bg-secondary/80 text-secondary-foreground"
-                            )}
-                        >
-                            <FolderOpen size={10} />
-                            打开位置
-                        </button>
-                    </div>
+                    <button
+                        onClick={(e) => { e.stopPropagation(); handleDownload(); }}
+                        className={cn(
+                            "flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors shadow-sm",
+                            isLocal
+                                ? "bg-primary-foreground/10 hover:bg-primary-foreground/20 text-primary-foreground"
+                                : "bg-secondary hover:bg-secondary/80 text-secondary-foreground"
+                        )}
+                    >
+                        <Download size={10} />
+                        下载文件
+                    </button>
                 )}
             </div>
         </div>

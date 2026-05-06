@@ -1,14 +1,8 @@
 import React from 'react';
-import { Pause, Play, X, File, ArrowUp, ArrowDown, CheckCircle2, FolderOpen } from 'lucide-react';
+import { Pause, Play, X, Download, ArrowUp, ArrowDown, CheckCircle2 } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
-const getDirectory = (path) => {
-    if (!path) return '';
-    const lastSlash = Math.max(path.lastIndexOf('/'), path.lastIndexOf('\\'));
-    return lastSlash > -1 ? path.substring(0, lastSlash) : path;
-};
-
-const TransferItem = ({ transfer, onPause, onResume, onCancel, onOpen }) => {
+const TransferItem = ({ transfer, onPause, onResume, onCancel }) => {
     const isSending = transfer.direction === 'send';
     const isPaused = transfer.status === 'paused';
     const isError = transfer.status === 'error';
@@ -81,23 +75,17 @@ const TransferItem = ({ transfer, onPause, onResume, onCancel, onOpen }) => {
                             </div>
                         )}
 
-                        {/* Open Buttons (Done state) */}
                         {isDone && transfer.fullPath && (
                             <div className="flex gap-1">
-                                <button
-                                    onClick={() => onOpen(transfer.fullPath)}
+                                <a
+                                    href={`/api/download?path=${encodeURIComponent(transfer.fullPath)}`}
+                                    download={transfer.name}
                                     className="p-1 hover:bg-secondary rounded text-blue-400"
-                                    title="打开文件"
+                                    title="下载文件"
+                                    onClick={(e) => e.stopPropagation()}
                                 >
-                                    <File size={14} />
-                                </button>
-                                <button
-                                    onClick={() => onOpen(getDirectory(transfer.fullPath))}
-                                    className="p-1 hover:bg-secondary rounded text-yellow-400"
-                                    title="打开所在文件夹"
-                                >
-                                    <FolderOpen size={14} />
-                                </button>
+                                    <Download size={14} />
+                                </a>
                             </div>
                         )}
                     </div>
