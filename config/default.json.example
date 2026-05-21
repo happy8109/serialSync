@@ -21,8 +21,8 @@
     "autoReconnect": true,
     "reconnectInterval": 3000,
     "maxReconnectAttempts": 0,
-    "heartbeatInterval": 5000,
-    "heartbeatTimeout": 15000,
+    "heartbeatInterval": 10000,
+    "heartbeatTimeout": 30000,
     "path": "COM3"
   },
   "transfer": {
@@ -34,10 +34,6 @@
   },
   "message": {
     "maxLength": 4096
-  },
-  "system": {
-    "heartbeatInterval": 5000,
-    "heartbeatTimeout": 15000
   },
   "logging": {
     "level": "info",

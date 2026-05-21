@@ -95,8 +95,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 ...prev,
                 serviceDiscovery: servicesVals.autoRegister !== undefined ? servicesVals.autoRegister : true,
                 logLevel: loggingVals.level || 'info',
-                heartbeatInterval: serialForSystem.heartbeatInterval || 5000,
-                heartbeatTimeout: serialForSystem.heartbeatTimeout || 15000,
+                heartbeatInterval: serialForSystem.heartbeatInterval || 10000,
+                heartbeatTimeout: serialForSystem.heartbeatTimeout || 30000,
                 apiPort: serverVals.port || 3000,
                 webPort: webVals.port || 5173
             }));
@@ -116,8 +116,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
     const [activeTab, setActiveTab] = useState('connection'); // 'connection' | 'transfer' | 'system'
 
     const [systemConfig, setSystemConfig] = useState({
-        heartbeatInterval: 5000,
-        heartbeatTimeout: 15000,
+        heartbeatInterval: 10000,
+        heartbeatTimeout: 30000,
         serviceDiscovery: true,
         logLevel: 'info',
         apiPort: 3000,
@@ -154,8 +154,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 conflictStrategy: "rename"
             },
             system: {
-                heartbeatInterval: 5000,
-                heartbeatTimeout: 15000,
+                heartbeatInterval: 10000,
+                heartbeatTimeout: 30000,
                 serviceDiscovery: true,
                 logLevel: "info"
             }

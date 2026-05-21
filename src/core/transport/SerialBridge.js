@@ -42,8 +42,12 @@ class SerialBridge extends EventEmitter {
         this.heartbeatMissCount = 0;  // 连续未收到 PONG 的次数
         this.heartbeatWaitingPong = false; // 是否正在等待 PONG
         this.PROBE_INTERVAL = 2000;   // 快探测间隔 (linkReady=false)
-        this.KEEPALIVE_INTERVAL = 10000; // 慢保活间隔 (linkReady=true)
-        this.MAX_MISS = 3;            // 连续丢失 N 次 PONG 判定断连
+        
+        // 读取配置中的心跳参数以作为默认参数值
+        const serialConfig = config.get('serial') || {};
+        this.KEEPALIVE_INTERVAL = serialConfig.heartbeatInterval || 10000; // 慢保活间隔，取自配置或默认10s
+        const heartbeatTimeout = serialConfig.heartbeatTimeout || 30000; // 超时判定时间，取自配置或默认30s
+        this.MAX_MISS = Math.max(1, Math.round(heartbeatTimeout / this.KEEPALIVE_INTERVAL)); // 连续丢失 N 次 PONG 判定断连
 
         // 统计信息
         this.stats = {
@@ -173,6 +177,21 @@ class SerialBridge extends EventEmitter {
 
         const oldConfig = { ...this.currentConfig };
         Object.assign(this.currentConfig, newConfig);
+
+        // 热更新心跳检测参数
+        if (newConfig.heartbeatInterval !== undefined || newConfig.heartbeatTimeout !== undefined) {
+            const newInterval = newConfig.heartbeatInterval || this.currentConfig.heartbeatInterval || 10000;
+            const newTimeout = newConfig.heartbeatTimeout || this.currentConfig.heartbeatTimeout || 30000;
+            this.KEEPALIVE_INTERVAL = newInterval;
+            this.MAX_MISS = Math.max(1, Math.round(newTimeout / newInterval));
+            bridgeLogger.info(`[串口] 心跳参数热更新: Interval=${this.KEEPALIVE_INTERVAL}ms, MaxMiss=${this.MAX_MISS}`);
+            this.emit('status-message', `心跳参数热更新: Interval=${this.KEEPALIVE_INTERVAL}ms, MaxMiss=${this.MAX_MISS}`);
+
+            // 如果当前正处于连接状态且心跳定时器在运行，则立即应用新的周期
+            if (this.isConnected && this.heartbeatTimer) {
+                this._startHeartbeat(this.linkReady ? this.KEEPALIVE_INTERVAL : this.PROBE_INTERVAL);
+            }
+        }
 
         // 检测物理参数是否变化
         const needsRestart = this.isConnected && (

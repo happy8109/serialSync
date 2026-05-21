@@ -93,7 +93,8 @@ class FileTransferService extends EventEmitter {
 
         this._sendJson(TYPE.FILE_OFFER, {
             id: fileId, name: path.basename(filePath), size: stats.size,
-            chunks: totalChunks, hash: fileHash, priority, meta
+            chunks: totalChunks, hash: fileHash, priority, meta,
+            chunkSize: this.chunkSize
         }, 1);
 
         bridgeLogger.info(`Offer sent: ${path.basename(filePath)} (${fileId.substring(0, 8)})`);
@@ -292,21 +293,22 @@ class FileTransferService extends EventEmitter {
 
         const s = this.recvSessions.get(id);
         if (!s || s.receivedBitmap.has(seq)) return;
-
-        fs.writeSync(s.fd, data, 0, data.length, seq * this.chunkSize);
+ 
+        const sessionChunkSize = s.chunkSize || this.chunkSize;
+        fs.writeSync(s.fd, data, 0, data.length, seq * sessionChunkSize);
         s.receivedBitmap.add(seq);
         s.receivedChunks++;
         s.lastProgressTime = Date.now();
-
+ 
         if (s.receivedChunks % 20 === 0 || s.receivedChunks === s.totalChunks) {
             fs.writeFileSync(s.metaPath, JSON.stringify({ hash: s.hash, bitmap: Array.from(s.receivedBitmap) }));
         }
-
+ 
         this.emit('progress', {
             fileId: id, type: 'receive', file: s.name, current: s.receivedChunks, total: s.chunks,
             size: s.size, // 传输总字节数
             percent: Math.round(s.receivedChunks / s.chunks * 100), status: s.status, isHidden: s.isHidden,
-            speed: this._updateSpeed(s, s.receivedChunks)
+            speed: this._updateSpeed(s, s.receivedChunks, sessionChunkSize)
         });
 
         if (s.receivedChunks === s.chunks || s.receivedChunks % this.ackInterval === 0) {
@@ -470,12 +472,13 @@ class FileTransferService extends EventEmitter {
         }
     }
 
-    _updateSpeed(s, currentChunks) {
+    _updateSpeed(s, currentChunks, customChunkSize) {
         const now = Date.now();
         const duration = (now - s.lastSpeedTime) / 1000;
+        const chunkSize = customChunkSize || this.chunkSize;
         if (duration >= 1.0) {
             const delta = currentChunks - s.lastChunks;
-            s.speed = Math.round((delta * this.chunkSize) / duration);
+            s.speed = Math.round((delta * chunkSize) / duration);
             s.lastChunks = currentChunks;
             s.lastSpeedTime = now;
         }
