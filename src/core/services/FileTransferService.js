@@ -71,10 +71,10 @@ class FileTransferService extends EventEmitter {
     /**
      * 发起一个文件传输任务
      */
-    async sendFile(filePath, priority = 2, meta = {}) {
+    async sendFile(filePath, priority = 2, meta = {}, customFileId = null) {
         if (!fs.existsSync(filePath)) throw new Error('File not found');
         const stats = fs.statSync(filePath);
-        const fileId = crypto.randomUUID();
+        const fileId = customFileId || crypto.randomUUID();
         const totalChunks = Math.ceil(stats.size / this.chunkSize);
 
         const fileHash = await new Promise((resolve, reject) => {

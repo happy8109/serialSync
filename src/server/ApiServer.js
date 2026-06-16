@@ -22,7 +22,7 @@ class ApiServer {
         this.port = port;
         this.app = express();
         this.server = http.createServer(this.app);
-        this.wss = new WebSocket.Server({ server: this.server });
+        this.wss = new WebSocket.Server({ noServer: true });
         this.controller = new AppController();
         this.logger = logger.create('ApiServer');
 
@@ -127,9 +127,9 @@ class ApiServer {
 
         // 5. 发送聊天消息
         router.post('/send/chat', (req, res) => {
-            const { text } = req.body;
+            const { text, sender } = req.body;
             if (!text) return res.status(400).json({ error: 'Text is required' });
-            this.controller.sendChat(text);
+            this.controller.sendChat(text, sender || {});
             res.json({ success: true });
         });
 
@@ -144,12 +144,49 @@ class ApiServer {
                 return res.status(400).json({ error: 'File or path is required' });
             }
 
+            const nickname = req.body.nickname || req.query.nickname || '';
+
             try {
-                const fileId = await this.controller.sendFile(filePath);
+                const fileId = await this.controller.sendFile(filePath, nickname);
                 res.json({ success: true, fileId });
             } catch (err) {
                 res.status(500).json({ error: err.message });
             }
+        });
+
+        // 6.5. 触发跨网中继文件拉取
+        router.post('/relay/pull', async (req, res) => {
+            const { fileId, fileName } = req.body;
+            if (!fileId || !fileName) {
+                return res.status(400).json({ error: 'fileId and fileName are required' });
+            }
+            try {
+                const result = await this.controller.relayService.requestFilePull(fileId, fileName);
+                res.json({ success: true, ...result });
+            } catch (err) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        // 6.6. 局域网中继下载特定文件
+        router.get('/relay/file/:fileId', (req, res) => {
+            const { fileId } = req.params;
+            const fileInfo = this.controller.relayService.fileIndex.get(fileId);
+            
+            if (!fileInfo || !fileInfo.local || !fileInfo.fullPath) {
+                return res.status(404).json({ error: '文件未就绪或未找到' });
+            }
+
+            if (!fs.existsSync(fileInfo.fullPath)) {
+                return res.status(404).json({ error: '物理文件不存在' });
+            }
+
+            res.download(fileInfo.fullPath, fileInfo.fileName, (err) => {
+                if (err && !res.headersSent) {
+                    this.logger.error(`中继文件下载失败: ${fileInfo.fullPath}`, err);
+                    res.status(500).json({ error: '下载失败' });
+                }
+            });
         });
 
         // 7. 获取状态
@@ -395,6 +432,22 @@ class ApiServer {
                 this.logger.info('WebSocket client disconnected');
             });
         });
+
+        // 监听 HTTP Server Upgrade 事件以分流 /relay WebSocket 连接
+        this.server.on('upgrade', (request, socket, head) => {
+            const pathname = new URL(request.url, `http://${request.headers.host || 'localhost'}`).pathname;
+
+            if (pathname === '/relay') {
+                const relayWsServer = new WebSocket.Server({ noServer: true });
+                relayWsServer.handleUpgrade(request, socket, head, (ws) => {
+                    this.controller.relayService.handlePeerConnection(ws);
+                });
+            } else {
+                this.wss.handleUpgrade(request, socket, head, (ws) => {
+                    this.wss.emit('connection', ws, request);
+                });
+            }
+        });
     }
 
     _broadcast(type, data) {
@@ -414,6 +467,10 @@ class ApiServer {
 
         this.controller.on('chat', (msg) => {
             this._broadcast('chat', msg);
+        });
+
+        this.controller.on('file_notify', (data) => {
+            this._broadcast('file_notify', data);
         });
 
         this.controller.on('pong', (data) => {

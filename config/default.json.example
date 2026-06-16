@@ -25,6 +25,13 @@
     "heartbeatTimeout": 30000,
     "path": "COM3"
   },
+  "identity": {
+    "nodeName": "Node-A",
+    "network": "A-Network"
+  },
+  "relay": {
+    "peerUrl": "ws://192.168.1.100:3003/relay"
+  },
   "transfer": {
     "chunkSize": 2048,
     "windowSize": 25,

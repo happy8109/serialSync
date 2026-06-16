@@ -53,7 +53,29 @@ const WebSocketService = () => {
                                 from: data.from || 'remote',
                                 type: 'text',
                                 text: data.text,
+                                sender: data.sender || null,
                                 timestamp: data.timestamp || new Date().toISOString()
+                            });
+                            break;
+                        case 'file_notify':
+                            updateTransfer(data.fileId, {
+                                id: data.fileId,
+                                name: data.fileName,
+                                size: data.fileSize,
+                                progress: 0,
+                                speed: 0,
+                                status: 'relay_available',
+                                direction: 'receive',
+                                sender: data.sender || null
+                            });
+                            addMessage({
+                                id: `msg_${data.fileId}`,
+                                from: 'remote',
+                                type: 'file',
+                                content: data.fileName,
+                                transferId: data.fileId,
+                                sender: data.sender || null,
+                                timestamp: new Date().toISOString()
                             });
                             break;
                         case 'log':

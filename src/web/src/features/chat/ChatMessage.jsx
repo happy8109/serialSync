@@ -15,6 +15,15 @@ const ChatMessage = ({ message, children }) => {
         );
     }
 
+    const getSenderName = () => {
+        if (isLocal) return 'Me';
+        const sender = message.sender;
+        if (!sender) return 'Remote';
+        const netPart = sender.network ? `[${sender.network}] ` : '';
+        const namePart = sender.nickname || sender.nodeName || 'Remote';
+        return `${netPart}${namePart}`;
+    };
+
     return (
         <div className={cn(
             "flex flex-col mb-4",
@@ -25,7 +34,7 @@ const ChatMessage = ({ message, children }) => {
                 isLocal ? "flex-row-reverse" : "flex-row"
             )}>
                 <span className="text-xs font-bold text-muted-foreground/70">
-                    {isLocal ? 'Me' : 'Remote'}
+                    {getSenderName()}
                 </span>
                 <span className="text-[10px] text-muted-foreground/50">
                     {new Date(message.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}

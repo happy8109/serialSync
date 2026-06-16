@@ -26,6 +26,10 @@ export const useAppStore = create(
             activeTab: 'chat',
             setActiveTab: (tab) => set({ activeTab: tab }),
 
+            // Identity
+            nickname: '',
+            setNickname: (nickname) => set({ nickname }),
+
             // Data Streams (Not persisted)
             logs: [],
             addLog: (log) => set((state) => ({ logs: [...state.logs.slice(-99), log] })),
@@ -62,6 +66,7 @@ export const useAppStore = create(
             name: 'serial-sync-storage', // localStorage key
             storage: createJSONStorage(() => localStorage),
             partialize: (state) => ({
+                nickname: state.nickname,
                 messages: state.messages,
                 transfers: state.transfers.map(t => ({
                     ...t,

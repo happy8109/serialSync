@@ -17,7 +17,7 @@ const FileBubble = ({ transferId, isLocal }) => {
         );
     }
 
-    const { name, size, progress, speed, status, error, fullPath } = transfer;
+    const { name, size, progress, speed, status, error, fullPath, sender } = transfer;
 
     // 根据后缀名选择图标
     const getFileIcon = (fileName) => {
@@ -64,7 +64,7 @@ const FileBubble = ({ transferId, isLocal }) => {
         }
     };
 
-    const isActive = status === 'sending' || status === 'receiving' || status === 'paused';
+    const isActive = status === 'sending' || status === 'receiving' || status === 'paused' || status === 'pulling';
 
     return (
         <div className="flex flex-col gap-3 min-w-[240px]">
@@ -82,7 +82,7 @@ const FileBubble = ({ transferId, isLocal }) => {
                         "text-[10px] opacity-70",
                         isLocal ? "text-primary-foreground" : "text-muted-foreground"
                     )}>
-                        {formatSize(size)}
+                        {formatSize(size)} {sender && ` • 来自 ${sender.nickname || sender.nodeName}`}
                     </div>
                 </div>
             </div>
@@ -96,6 +96,10 @@ const FileBubble = ({ transferId, isLocal }) => {
                                 <span className="flex items-center gap-1 text-yellow-500">
                                     <Pause size={10} /> 已暂停
                                 </span>
+                            ) : status === 'pulling' ? (
+                                <span className="flex items-center gap-1 text-blue-500 font-bold">
+                                    <Loader2 size={10} className="animate-spin" /> 正在发起中继拉取...
+                                </span>
                             ) : (
                                 <span className="flex items-center gap-1">
                                     <Loader2 size={10} className="animate-spin" />
@@ -103,58 +107,62 @@ const FileBubble = ({ transferId, isLocal }) => {
                                 </span>
                             )}
                         </span>
-                        <span className="font-mono">{progress || 0}%</span>
+                        {status !== 'pulling' && <span className="font-mono">{progress || 0}%</span>}
                     </div>
-                    <div className={cn(
-                        "h-1.5 w-full rounded-full overflow-hidden",
-                        isLocal ? "bg-primary-foreground/20" : "bg-muted"
-                    )}>
-                        <div
-                            className={cn(
-                                "h-full transition-all duration-300",
-                                isLocal ? "bg-white/40" : "bg-blue-600",
-                                status === 'paused' && "opacity-50 grayscale"
-                            )}
-                            style={{ width: `${progress || 0}%` }}
-                        />
-                    </div>
-                    <div className="flex justify-between items-center text-[10px] opacity-70 font-mono">
-                        <div className="flex items-center gap-1">
-                            <span className="opacity-50">Speed:</span>
-                            <span>{formatSpeed(speed)}</span>
-                        </div>
+                    {status !== 'pulling' && (
+                        <>
+                            <div className={cn(
+                                "h-1.5 w-full rounded-full overflow-hidden",
+                                isLocal ? "bg-primary-foreground/20" : "bg-muted"
+                            )}>
+                                <div
+                                    className={cn(
+                                        "h-full transition-all duration-300",
+                                        isLocal ? "bg-white/40" : "bg-blue-600",
+                                        status === 'paused' && "opacity-50 grayscale"
+                                    )}
+                                    style={{ width: `${progress || 0}%` }}
+                                />
+                            </div>
+                            <div className="flex justify-between items-center text-[10px] opacity-70 font-mono">
+                                <div className="flex items-center gap-1">
+                                    <span className="opacity-50">Speed:</span>
+                                    <span>{formatSpeed(speed)}</span>
+                                </div>
 
-                        {/* Control Buttons */}
-                        <div className="flex items-center gap-2">
-                            {status === 'paused' ? (
-                                <button
-                                    disabled={actionLoading}
-                                    onClick={() => handleAction('resume')}
-                                    className="p-1 hover:bg-black/10 rounded transition-colors"
-                                    title="恢复"
-                                >
-                                    <Play size={12} fill="currentColor" />
-                                </button>
-                            ) : (
-                                <button
-                                    disabled={actionLoading}
-                                    onClick={() => handleAction('pause')}
-                                    className="p-1 hover:bg-black/10 rounded transition-colors"
-                                    title="暂停"
-                                >
-                                    <Pause size={12} fill="currentColor" />
-                                </button>
-                            )}
-                            <button
-                                disabled={actionLoading}
-                                onClick={() => handleAction('cancel')}
-                                className="p-1 hover:bg-black/10 rounded transition-colors"
-                                title="取消"
-                            >
-                                <Square size={10} fill="currentColor" />
-                            </button>
-                        </div>
-                    </div>
+                                {/* Control Buttons */}
+                                <div className="flex items-center gap-2">
+                                    {status === 'paused' ? (
+                                        <button
+                                            disabled={actionLoading}
+                                            onClick={() => handleAction('resume')}
+                                            className="p-1 hover:bg-black/10 rounded transition-colors"
+                                            title="恢复"
+                                        >
+                                            <Play size={12} fill="currentColor" />
+                                        </button>
+                                    ) : (
+                                        <button
+                                            disabled={actionLoading}
+                                            onClick={() => handleAction('pause')}
+                                            className="p-1 hover:bg-black/10 rounded transition-colors"
+                                            title="暂停"
+                                        >
+                                            <Pause size={12} fill="currentColor" />
+                                        </button>
+                                    )}
+                                    <button
+                                        disabled={actionLoading}
+                                        onClick={() => handleAction('cancel')}
+                                        className="p-1 hover:bg-black/10 rounded transition-colors"
+                                        title="取消"
+                                    >
+                                        <Square size={10} fill="currentColor" />
+                                    </button>
+                                </div>
+                            </div>
+                        </>
+                    )}
                 </div>
             )}
 
@@ -175,6 +183,12 @@ const FileBubble = ({ transferId, isLocal }) => {
                             </span>
                         </>
                     )}
+                    {status === 'relay_available' && (
+                        <>
+                            <AlertCircle size={12} className="text-blue-500 animate-pulse" />
+                            <span className="text-blue-500">跨网文件</span>
+                        </>
+                    )}
                 </div>
 
                 {/* Actions */}
@@ -190,6 +204,39 @@ const FileBubble = ({ transferId, isLocal }) => {
                     >
                         <Download size={10} />
                         下载文件
+                    </button>
+                )}
+
+                {status === 'relay_available' && (
+                    <button
+                        disabled={actionLoading}
+                        onClick={async (e) => {
+                            e.stopPropagation();
+                            setActionLoading(true);
+                            try {
+                                updateTransfer(transferId, { status: 'pulling' });
+                                const response = await fetch('/api/relay/pull', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ fileId: transferId, fileName: name })
+                                });
+                                const result = await response.json();
+                                if (!result.success || (!result.pulling && !result.available)) {
+                                    updateTransfer(transferId, { status: 'failed', error: result.error || '中继拉取发起失败' });
+                                }
+                            } catch (err) {
+                                console.error('Failed to trigger relay pull:', err);
+                                updateTransfer(transferId, { status: 'failed', error: '中继拉取发起失败' });
+                            } finally {
+                                setActionLoading(false);
+                            }
+                        }}
+                        className={cn(
+                            "flex items-center gap-1 px-2 py-1 rounded text-[10px] transition-colors shadow-sm bg-blue-600 hover:bg-blue-700 text-white"
+                        )}
+                    >
+                        <Download size={10} />
+                        拉取文件
                     </button>
                 )}
             </div>

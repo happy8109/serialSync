@@ -6,7 +6,7 @@ import ChatMessage from './ChatMessage';
 import FileBubble from './FileBubble';
 
 const ChatView = () => {
-    const { messages, addMessage, clearMessages, updateTransfer } = useAppStore();
+    const { messages, addMessage, clearMessages, updateTransfer, nickname, setNickname } = useAppStore();
     const [input, setInput] = useState('');
     const [isDragging, setIsDragging] = useState(false);
     const messagesEndRef = useRef(null);
@@ -39,7 +39,10 @@ const ChatView = () => {
             await fetch('/api/send/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ text })
+                body: JSON.stringify({
+                    text,
+                    sender: { nickname }
+                })
             });
 
             addMessage({
@@ -60,6 +63,9 @@ const ChatView = () => {
         for (const file of files) {
             const formData = new FormData();
             formData.append('file', file);
+            if (nickname) {
+                formData.append('nickname', nickname);
+            }
 
             try {
                 const response = await fetch('/api/send/file', {
@@ -142,13 +148,22 @@ const ChatView = () => {
                     <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse"></div>
                     串口对话
                 </div>
-                <button
-                    onClick={() => { if (confirm('确定清空聊天记录？')) clearMessages(); }}
-                    className="p-1.5 text-muted-foreground hover:text-red-400 hover:bg-red-400/10 rounded-md transition-all"
-                    title="清空记录"
-                >
-                    <Trash2 size={16} />
-                </button>
+                <div className="flex items-center gap-2">
+                    <input
+                        type="text"
+                        value={nickname}
+                        onChange={(e) => setNickname(e.target.value)}
+                        placeholder="设置聊天昵称..."
+                        className="bg-input text-foreground border border-border text-xs px-2.5 py-1 rounded-md max-w-[150px] focus:outline-none focus:ring-1 focus:ring-primary focus:border-primary shadow-sm"
+                    />
+                    <button
+                        onClick={() => { if (confirm('确定清空聊天记录？')) clearMessages(); }}
+                        className="p-1.5 text-muted-foreground hover:text-red-400 hover:bg-red-400/10 rounded-md transition-all"
+                        title="清空记录"
+                    >
+                        <Trash2 size={16} />
+                    </button>
+                </div>
             </div>
 
             {/* Drag Overlay */}

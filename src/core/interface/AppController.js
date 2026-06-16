@@ -4,6 +4,7 @@
  */
 
 const EventEmitter = require('events');
+const os = require('os');
 const SerialBridge = require('../transport/SerialBridge');
 const PacketScheduler = require('../transport/PacketScheduler');
 const ServiceManager = require('../services/ServiceManager');
@@ -12,6 +13,7 @@ const SystemService = require('../services/SystemService');
 const FileTransferService = require('../services/FileTransferService');
 const HttpProxyService = require('../services/HttpProxyService');
 const FileSyncService = require('../services/FileSyncService');
+const RelayService = require('../services/RelayService');
 const { logger } = require('../../utils/logger');
 const appLogger = logger.create('App');
 
@@ -32,6 +34,7 @@ class AppController extends EventEmitter {
         });
         this.httpProxyService = new HttpProxyService();
         this.fileSyncService = new FileSyncService();
+        this.relayService = new RelayService();
 
         // 注册服务
         this.serviceManager.register(this.messageService);
@@ -39,6 +42,7 @@ class AppController extends EventEmitter {
         this.serviceManager.register(this.fileTransferService);
         this.serviceManager.register(this.httpProxyService);
         this.serviceManager.register(this.fileSyncService);
+        this.serviceManager.register(this.relayService);
 
         // 注入依赖
         this.fileSyncService.setScheduler(this.scheduler);
@@ -62,6 +66,18 @@ class AppController extends EventEmitter {
 
         if (config.has('syncTasks')) {
             this.fileSyncService.updateTasks(config.get('syncTasks'));
+        }
+
+        // 初始化身份和中继配置
+        const defaultIdentity = {
+            nodeName: config.has('identity.nodeName') ? config.get('identity.nodeName') : os.hostname(),
+            network: config.has('identity.network') ? config.get('identity.network') : ''
+        };
+        this.messageService.setIdentity(defaultIdentity);
+        this.relayService.setIdentity(defaultIdentity);
+
+        if (config.has('relay.peerUrl')) {
+            this.relayService.setPeerUrl(config.get('relay.peerUrl'));
         }
 
         // 监听 Bridge 状态
@@ -103,10 +119,53 @@ class AppController extends EventEmitter {
         // 监听业务事件
         this.messageService.on('message', (msg) => {
             this.emit('chat', msg);
+            // 转发串口聊天消息到中继
+            this.relayService.forwardToRelay('serial', {
+                type: 'chat',
+                msgId: msg.msgId,
+                sender: msg.sender,
+                content: msg.text
+            });
         });
 
         this.systemService.on('pong', (data) => {
             this.emit('pong', data);
+        });
+
+        // 监听中继事件
+        this.relayService.on('relay_chat', (msg) => {
+            this.emit('chat', msg);
+        });
+
+        this.relayService.on('relay_file_notify', (data) => {
+            this.emit('file_notify', data);
+        });
+
+        this.relayService.on('relay_send_file', (data) => {
+            this.fileTransferService.sendFile(data.fullPath, 2, {}, data.fileId)
+                .catch(err => {
+                    appLogger.error(`[中继] 发送串口中继文件失败: ${err.message}`);
+                });
+        });
+
+        this.relayService.on('relay_pull_complete', (data) => {
+            this.emit('complete', {
+                fileId: data.fileId,
+                type: 'receive',
+                file: data.fileName,
+                fullPath: data.fullPath
+            });
+        });
+
+        this.relayService.on('relay_pull_failed', (data) => {
+            this.emit('error', {
+                fileId: data.fileId,
+                message: data.error
+            });
+        });
+
+        this.relayService.on('relay_status', (status) => {
+            this.emit('status', this.getStatus());
         });
 
         // 监听文件传输事件
@@ -116,6 +175,10 @@ class AppController extends EventEmitter {
 
         this.fileTransferService.on('complete', (data) => {
             this.emit('complete', data);
+            if (data.type === 'receive') {
+                // 通知中继服务文件已就绪以回应拉取
+                this.relayService.onFileReceived(data.fileId, data.file, data.fullPath);
+            }
         });
 
         this.fileTransferService.on('error', (err) => {
@@ -193,6 +256,15 @@ class AppController extends EventEmitter {
             this.fileSyncService.updateTasks(config.syncTasks);
         }
 
+        // 热更新身份和中继配置
+        if (config.identity) {
+            this.messageService.setIdentity(config.identity);
+            this.relayService.setIdentity(config.identity);
+        }
+        if (config.relay && config.relay.peerUrl !== undefined) {
+            this.relayService.setPeerUrl(config.relay.peerUrl);
+        }
+
         // 3. 运行时热更新: 系统选项
         if (config.system) {
             // Service Discovery
@@ -234,6 +306,12 @@ class AppController extends EventEmitter {
             }
             if (config.syncTasks) {
                 currentConfig.syncTasks = config.syncTasks;
+            }
+            if (config.identity) {
+                currentConfig.identity = { ...currentConfig.identity, ...config.identity };
+            }
+            if (config.relay) {
+                currentConfig.relay = { ...currentConfig.relay, ...config.relay };
             }
             if (config.system) {
                 // Map UI system config to actual file config structure
@@ -277,8 +355,12 @@ class AppController extends EventEmitter {
     /**
      * 发送聊天消息 (P1)
      */
-    sendChat(text) {
-        this.messageService.sendMessage(text);
+    sendChat(text, senderOverride = {}) {
+        const payload = this.messageService.sendMessage(text, senderOverride);
+        if (this.relayService) {
+            this.relayService.forwardToRelay('local', payload);
+        }
+        return payload;
     }
 
     /**
@@ -291,8 +373,30 @@ class AppController extends EventEmitter {
     /**
      * 发送文件 (P2)
      */
-    async sendFile(filePath) {
-        return await this.fileTransferService.sendFile(filePath);
+    async sendFile(filePath, nickname = '') {
+        const fileId = await this.fileTransferService.sendFile(filePath);
+        
+        // 主动广播文件通知
+        if (this.relayService) {
+            const fs = require('fs');
+            const path = require('path');
+            const stats = fs.statSync(filePath);
+            const fileName = path.basename(filePath);
+            
+            this.relayService.broadcastFileNotify({
+                fileId,
+                fileName,
+                fileSize: stats.size,
+                fullPath: filePath,
+                sender: {
+                    nickname,
+                    nodeName: this.relayService.identity.nodeName,
+                    network: this.relayService.identity.network
+                }
+            });
+        }
+        
+        return fileId;
     }
 
     pauseFileTransfer(fileId) {
@@ -468,7 +572,8 @@ class AppController extends EventEmitter {
             bridgeStats: this.bridge.stats,
             queueStats: this.scheduler.getStatus(),
             discoveredShares: this.fileSyncService.getDiscoveredShares(), // Expose discovered shares in status
-            peerActivities: this.fileSyncService.getPeerActivities()
+            peerActivities: this.fileSyncService.getPeerActivities(),
+            relayStatus: this.relayService ? this.relayService.getStatus() : null
         };
     }
 
