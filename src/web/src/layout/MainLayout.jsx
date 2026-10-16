@@ -33,8 +33,16 @@ const MainLayout = ({ children }) => {
                         <h1 className="font-bold text-lg tracking-tight">SerialSync</h1>
                         <span className="text-xs font-normal text-muted-foreground">v{__APP_VERSION__}</span>
                         {config?.identity?.nodeName && (
-                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary border border-primary/20">
-                                {config.identity.network ? `${config.identity.network} / ` : ''}{config.identity.nodeName}
+                            <span
+                                className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
+                                title={config?.identity?.nodeId ? `物理真ID (不可变): ${config.identity.nodeId}` : undefined}
+                            >
+                                <span>{config.identity.network ? `${config.identity.network} / ` : ''}{config.identity.nodeName}</span>
+                                {config?.identity?.nodeId && (
+                                    <span className="font-mono text-[10px] opacity-65 font-normal">
+                                        ({config.identity.nodeId})
+                                    </span>
+                                )}
                             </span>
                         )}
                     </div>

@@ -2,8 +2,8 @@
  * TunnelService.js
  * 负责跨网 TCP 端口转发与隧道多路复用 (Phase 5)
  * 协议类型:
- *   PT.TUNNEL_CTRL (0x40) - 隧道生命周期控制 (OPEN_REQ, OPEN_ACK, OPEN_REJ, CLOSE_REQ)
- *   PT.TUNNEL_DATA (0x41) - 二进制 TCP 流量透明透传
+ *   PT.TUNNEL_CTRL (0x60) - 隧道生命周期控制 (OPEN_REQ, OPEN_ACK, OPEN_REJ, CLOSE_REQ)
+ *   PT.TUNNEL_DATA (0x61) - 二进制 TCP 流量透明透传
  * 
  * 架构特点:
  *   1. 零二进制依赖：纯 Node.js 原生 net 模块驱动，免编译、免集成终端。
@@ -19,8 +19,8 @@ const { logger } = require('../../utils/logger');
 const tunnelLogger = logger.create('Tunnel');
 
 const PT = {
-    TUNNEL_CTRL: 0x40,
-    TUNNEL_DATA: 0x41
+    TUNNEL_CTRL: 0x60,
+    TUNNEL_DATA: 0x61
 };
 
 const CTRL_CMD = {
@@ -41,7 +41,8 @@ class TunnelService extends EventEmitter {
         // 本节点身份
         this.identity = {
             nodeName: os.hostname(),
-            network: ''
+            network: '',
+            nodeId: ''
         };
 
         // 安全与行为配置
@@ -75,8 +76,10 @@ class TunnelService extends EventEmitter {
     }
 
     setIdentity(identity) {
+        if (!identity) return;
         if (identity.nodeName) this.identity.nodeName = identity.nodeName;
-        if (identity.network) this.identity.network = identity.network;
+        if (identity.network !== undefined) this.identity.network = identity.network;
+        if (identity.nodeId) this.identity.nodeId = identity.nodeId;
     }
 
     setConfig(cfg = {}) {

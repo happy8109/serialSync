@@ -311,10 +311,15 @@ class ApiServer {
             res.json({ success: true, data: this.controller.getRemoteServices() });
         });
 
-        // 14. 调用远程服务 (RPC 风格, Legacy)
-        router.post('/services/remote/:serviceId/call', async (req, res) => {
+        // 14. 调用远程服务 (RPC 风格, 支持多级网络路径及单级服务名)
+        router.post(['/services/remote/:serviceId/call', '/services/remote/:part1/:serviceId/call', '/services/remote/:part1/:part2/:serviceId/call'], async (req, res) => {
             try {
-                const { serviceId } = req.params;
+                let serviceId = req.params.serviceId;
+                if (req.params.part2) {
+                    serviceId = `${req.params.part1}/${req.params.part2}/${req.params.serviceId}`;
+                } else if (req.params.part1) {
+                    serviceId = `${req.params.part1}/${req.params.serviceId}`;
+                }
                 const params = req.body;
 
                 const result = await this.controller.pullService(serviceId, params);
@@ -551,6 +556,10 @@ class ApiServer {
 
         this.controller.on('status-msg', (log) => {
             this._broadcast('log', log);
+        });
+
+        this.controller.on('remote_services', (services) => {
+            this._broadcast('remote_services', services);
         });
 
         // 捕获错误，防止进程崩溃

@@ -82,7 +82,7 @@ const FileBubble = ({ transferId, isLocal }) => {
                         "text-[10px] opacity-70",
                         isLocal ? "text-primary-foreground" : "text-muted-foreground"
                     )}>
-                        {formatSize(size)} {sender && ` • 来自 ${sender.nickname || sender.nodeName}`}
+                        {formatSize(size)} {sender && ` • 来自 ${sender.nickname || sender.nodeName}${(sender.network && sender.nodeName && sender.nickname) ? ` [${sender.network}/${sender.nodeName}]` : (sender.network ? ` [${sender.network}]` : '')}`}
                     </div>
                 </div>
             </div>

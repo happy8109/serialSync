@@ -27,6 +27,7 @@ class RouteEngine extends EventEmitter {
 
         // 节点身份与地址
         this.identity = {
+            nodeId: (options.identity && options.identity.nodeId) || '',
             nodeName: (options.identity && options.identity.nodeName) || os.hostname(),
             network: (options.identity && options.identity.network) || ''
         };
@@ -61,9 +62,10 @@ class RouteEngine extends EventEmitter {
      */
     setIdentity(identity) {
         if (!identity) return;
+        if (identity.nodeId) this.identity.nodeId = identity.nodeId;
         if (identity.nodeName) this.identity.nodeName = identity.nodeName;
         if (identity.network !== undefined) this.identity.network = identity.network;
-        routeLogger.info(`[路由] 节点身份更新: ${this.localAddress}`);
+        routeLogger.info(`[路由] 节点身份更新: ${this.localAddress} (id=${this.identity.nodeId || 'none'})`);
     }
 
     // =========================================================================
@@ -162,7 +164,7 @@ class RouteEngine extends EventEmitter {
         }
 
         // 4. 本地消费判定
-        const isForLocal = packet.matchesDestination(this.identity.network, this.identity.nodeName);
+        const isForLocal = packet.matchesDestination(this.identity.network, this.identity.nodeName, this.identity.nodeId);
         if (isForLocal) {
             routeLogger.debug(`[路由] 本地交付: ${packet.packetId} type=0x${packet.type.toString(16)} src=${packet.src}`);
             this.emit('local_packet', packet);

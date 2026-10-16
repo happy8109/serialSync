@@ -18,7 +18,8 @@ class MessageService extends EventEmitter {
         // 节点身份信息（由 AppController 注入）
         this.identity = {
             nodeName: os.hostname(),
-            network: ''
+            network: '',
+            nodeId: ''
         };
 
         // 消息去重（保留最近 500 条 msgId）
@@ -44,11 +45,13 @@ class MessageService extends EventEmitter {
 
     /**
      * 设置节点身份信息
-     * @param {Object} identity - { nodeName, network }
+     * @param {Object} identity - { nodeName, network, nodeId }
      */
     setIdentity(identity) {
+        if (!identity) return;
         if (identity.nodeName) this.identity.nodeName = identity.nodeName;
-        if (identity.network) this.identity.network = identity.network;
+        if (identity.network !== undefined) this.identity.network = identity.network;
+        if (identity.nodeId) this.identity.nodeId = identity.nodeId;
     }
 
     /**
@@ -101,7 +104,8 @@ class MessageService extends EventEmitter {
     sendMessage(text, senderOverride = {}) {
         if (!this.scheduler) throw new Error('Scheduler not set');
 
-        const msgId = `${this.identity.nodeName}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        const msgPrefix = this.identity.nodeId || this.identity.nodeName;
+        const msgId = `${msgPrefix}_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
         // 标记已见，防止环路返回
         this.seenMsgIds.add(msgId);
@@ -117,6 +121,7 @@ class MessageService extends EventEmitter {
                 nickname: senderOverride.nickname || '',
                 nodeName: this.identity.nodeName,
                 network: this.identity.network,
+                nodeId: this.identity.nodeId || '',
                 ip: senderOverride.ip || ''
             },
             content: text

@@ -47,7 +47,8 @@ class RelayService extends EventEmitter {
         // 节点身份
         this.identity = {
             nodeName: os.hostname(),
-            network: ''
+            network: '',
+            nodeId: ''
         };
 
         // 消息去重（保留最近 500 条 msgId）
@@ -89,8 +90,10 @@ class RelayService extends EventEmitter {
      * 设置节点身份
      */
     setIdentity(identity) {
+        if (!identity) return;
         if (identity.nodeName) this.identity.nodeName = identity.nodeName;
-        if (identity.network) this.identity.network = identity.network;
+        if (identity.network !== undefined) this.identity.network = identity.network;
+        if (identity.nodeId) this.identity.nodeId = identity.nodeId;
     }
 
     /**
@@ -354,6 +357,7 @@ class RelayService extends EventEmitter {
             ws.send(JSON.stringify({
                 action: 'handshake',
                 data: {
+                    nodeId: this.identity.nodeId,
                     nodeName: this.identity.nodeName,
                     network: this.identity.network
                 }
@@ -438,7 +442,7 @@ class RelayService extends EventEmitter {
                 if (peerEntry) {
                     peerEntry.identity = data;
                 }
-                relayLogger.info(`[中继] 对端握手: ${data.network ? '[' + data.network + '] ' : ''}${data.nodeName}`);
+                relayLogger.info(`[中继] 对端握手: ${data.network ? '[' + data.network + '] ' : ''}${data.nodeName}${data.nodeId ? ' (' + data.nodeId + ')' : ''}`);
 
                 // 注册该 LAN 对端为 RouteEngine 的通信链路
                 if (this.routeEngine && data.nodeName) {
@@ -1054,6 +1058,7 @@ class RelayService extends EventEmitter {
         for (const peer of this.peers.values()) {
             peerList.push({
                 id: peer.id,
+                nodeId: peer.identity ? peer.identity.nodeId : null,
                 nodeName: peer.identity ? peer.identity.nodeName : 'unknown',
                 network: peer.identity ? peer.identity.network : '',
                 direction: peer.isClient ? 'outbound' : 'inbound',

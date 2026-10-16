@@ -5,9 +5,8 @@ import { cn } from '../../lib/utils';
 import useAppStore from '../../store/appStore';
 
 export default function ServiceManager() {
-    const { addLog } = useAppStore();
+    const { addLog, remoteServices, setRemoteServices } = useAppStore();
     const [localServices, setLocalServices] = useState([]);
-    const [remoteServices, setRemoteServices] = useState([]);
     const [loading, setLoading] = useState(false);
     const [querying, setQuerying] = useState(false);
 
@@ -200,7 +199,8 @@ export default function ServiceManager() {
     };
 
     const getProxyUrl = (service) => {
-        const base = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/api/proxy/${service.id}`;
+        const idToUse = service.globalId || service.id;
+        const base = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/api/proxy/${idToUse}`;
         return service.mode === 'gateway' ? `${base}/` : base;
     };
 
@@ -332,11 +332,12 @@ export default function ServiceManager() {
                         )}
                         {remoteServices.map(service => {
                             const proxyUrl = getProxyUrl(service);
+                            const serviceCallId = service.globalId || service.id;
                             return (
-                                <div key={service.id} className="bg-card border border-border/50 rounded-lg p-3 hover:border-orange-500/30 transition-colors flex flex-col gap-3">
+                                <div key={serviceCallId} className="bg-card border border-border/50 rounded-lg p-3 hover:border-orange-500/30 transition-colors flex flex-col gap-3">
                                     <div className="flex justify-between items-start">
                                         <div>
-                                            <div className="font-medium flex items-center gap-2 text-foreground">
+                                            <div className="font-medium flex items-center gap-2 text-foreground flex-wrap">
                                                 {service.enabled ? (
                                                     service.status === 'offline' ?
                                                         <span className="w-2 h-2 rounded-full bg-red-500 shadow-[0_0_8px_rgba(239,68,68,0.6)]" title="远程服务异常"></span> :
@@ -350,17 +351,22 @@ export default function ServiceManager() {
                                                 {service.mode === 'gateway' && (
                                                     <span className="ml-1 text-[10px] bg-orange-500/10 border border-orange-500/20 px-1.5 py-0.5 rounded-full text-orange-500 uppercase tracking-tighter">Gateway</span>
                                                 )}
+                                                {(service.nodeName || service.network) && (
+                                                    <span className="ml-1 text-[10px] bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded-full text-blue-500 font-mono">
+                                                        @{service.nodeName || ''}{service.network ? ` (${service.network})` : ''}
+                                                    </span>
+                                                )}
                                             </div>
                                             <div className="text-xs text-muted-foreground mt-0.5">{service.description || '暂无描述'}</div>
                                         </div>
                                         <div className="flex gap-2">
                                             <button
-                                                onClick={() => handleCallService(service.id)}
-                                                disabled={callingServiceId === service.id}
+                                                onClick={() => handleCallService(serviceCallId)}
+                                                disabled={callingServiceId === serviceCallId}
                                                 className="p-1.5 bg-primary/10 hover:bg-primary/20 text-primary rounded-md transition-colors disabled:opacity-50"
                                                 title="快速测试调用"
                                             >
-                                                {callingServiceId === service.id ?
+                                                {callingServiceId === serviceCallId ?
                                                     <Activity size={16} className="animate-spin" /> :
                                                     <Play size={16} fill="currentColor" />
                                                 }

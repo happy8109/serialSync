@@ -26,6 +26,7 @@
     "path": "COM3"
   },
   "identity": {
+    "nodeId": "",
     "nodeName": "Node-A",
     "network": "A-Network"
   },

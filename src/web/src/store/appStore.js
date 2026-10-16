@@ -19,7 +19,8 @@ export const useAppStore = create(
                 stats: status.bridgeStats !== undefined ? status.bridgeStats : state.stats,
                 config: status.config !== undefined ? status.config : state.config,
                 discoveredShares: status.discoveredShares || state.discoveredShares,
-                peerActivities: status.peerActivities || state.peerActivities
+                peerActivities: status.peerActivities || state.peerActivities,
+                remoteServices: status.remoteServices !== undefined ? status.remoteServices : state.remoteServices
             })),
 
             // Active Tab
@@ -61,6 +62,10 @@ export const useAppStore = create(
             // Sync Discovery
             discoveredShares: [],
             setDiscoveredShares: (shares) => set({ discoveredShares: shares }),
+
+            // Remote Services Discovery
+            remoteServices: [],
+            setRemoteServices: (services) => set({ remoteServices: Array.isArray(services) ? services : [] }),
         }),
         {
             name: 'serial-sync-storage', // localStorage key

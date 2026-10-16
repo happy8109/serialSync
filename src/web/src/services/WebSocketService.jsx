@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import useAppStore from '../store/appStore';
 
 const WebSocketService = () => {
-    const { setConnectionStatus, addLog, addMessage, updateTransfer, setDiscoveredShares } = useAppStore();
+    const { setConnectionStatus, addLog, addMessage, updateTransfer, setDiscoveredShares, setRemoteServices } = useAppStore();
 
     useEffect(() => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -168,6 +168,11 @@ const WebSocketService = () => {
                                 tag: 'SYNC',
                                 message: `Discovered ${Object.keys(data).length} remote shares`
                             });
+                            break;
+                        case 'remote_services':
+                            if (setRemoteServices) {
+                                setRemoteServices(data);
+                            }
                             break;
                         default:
                             console.log('Unknown message type:', type);

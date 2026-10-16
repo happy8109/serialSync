@@ -39,7 +39,7 @@ class HttpProxyService extends EventEmitter {
         this.routeEngine = null;
 
         // Node Identity
-        this.identity = { nodeName: '', network: '' };
+        this.identity = { nodeName: '', network: '', nodeId: '' };
 
         // Config Path for persistence
         this.configPath = path.join(process.cwd(), 'config', 'default.json');
@@ -67,6 +67,7 @@ class HttpProxyService extends EventEmitter {
         if (!identity) return;
         if (identity.nodeName) this.identity.nodeName = identity.nodeName;
         if (identity.network !== undefined) this.identity.network = identity.network;
+        if (identity.nodeId) this.identity.nodeId = identity.nodeId;
     }
 
     setAutoDiscovery(enabled) {
@@ -165,6 +166,7 @@ class HttpProxyService extends EventEmitter {
 
         if (persist) {
             this._persistConfig();
+            this.broadcastLocalServices();
         }
 
         // Trigger immediate check
@@ -232,6 +234,7 @@ class HttpProxyService extends EventEmitter {
                 } catch (e) {
                     this.logger.error('Failed to update config for removal:', e);
                 }
+                this.broadcastLocalServices();
             }
         }
     }
@@ -244,75 +247,87 @@ class HttpProxyService extends EventEmitter {
      * Call a service (Local direct execution or remote multi-network routing)
      */
     async pullService(serviceId, params = {}, timeout = 30000) {
-        // 1. 如果请求的是本地服务，直接本地执行（零网络开销）
-        if (this.localServices.has(serviceId)) {
-            return await this._callLocalService(serviceId, params);
-        }
-
-        // 2. 解析目标网络与真实服务名称
-        let targetDst = '*';
+        // 1. 解析目标网络/主机与真实服务名称
+        let targetDst = null;
         let actualServiceId = serviceId;
 
         if (serviceId.includes('/')) {
             const parts = serviceId.split('/');
-            const targetNet = parts[0];
-            actualServiceId = parts.slice(1).join('/');
-
-            // 查询已知远程服务条目
-            const remote = this.remoteServices.get(serviceId);
-            if (remote && remote.targetNode) {
-                targetDst = remote.targetNode;
-            } else {
-                targetDst = `${targetNet}/*`;
+            if (parts.length >= 3) {
+                // 格式: [network]/[nodeName]/[serviceId]
+                targetDst = `${parts[0]}/${parts[1]}`;
+                actualServiceId = parts.slice(2).join('/');
+            } else if (parts.length === 2) {
+                // 格式: [network]/[serviceId] 或 [nodeName]/[serviceId]
+                const remote = this.remoteServices.get(serviceId);
+                if (remote && remote.targetNode) {
+                    targetDst = remote.targetNode;
+                } else {
+                    targetDst = `${parts[0]}/*`;
+                }
+                actualServiceId = parts[1];
             }
         } else if (this.remoteServices.has(serviceId)) {
+            // 纯短 ID: 查找已知远程服务
             const remote = this.remoteServices.get(serviceId);
             if (remote && remote.targetNode) {
                 targetDst = remote.targetNode;
             } else if (remote && remote.network) {
                 targetDst = `${remote.network}/*`;
+            } else {
+                targetDst = '*';
             }
+            actualServiceId = remote.id || serviceId;
         }
 
-        const requestId = this._generateRequestId();
-        const request = {
-            id: requestId,
-            service: actualServiceId,
-            caller: this.routeEngine ? this.routeEngine.localAddress : '',
-            params
-        };
+        // 2. 如果解析到目标或属于已知远程服务，优先发起跨网/串口远程调用
+        if (targetDst) {
+            const requestId = this._generateRequestId();
+            const request = {
+                id: requestId,
+                service: actualServiceId,
+                caller: this.routeEngine ? this.routeEngine.localAddress : '',
+                params
+            };
 
-        const payload = Buffer.from(JSON.stringify(request));
+            const payload = Buffer.from(JSON.stringify(request));
 
-        if (this.routeEngine) {
-            this.routeEngine.send({
-                type: PT.CALL,
-                dst: targetDst,
-                payload,
-                priority: 1
+            if (this.routeEngine) {
+                this.routeEngine.send({
+                    type: PT.CALL,
+                    dst: targetDst,
+                    payload,
+                    priority: 1
+                });
+                this.logger.info(`[PULL] Requesting ${serviceId} -> dst=${targetDst} (${requestId})`);
+            } else if (this.scheduler) {
+                this.scheduler.enqueue(PT.CALL, 0, payload, 1);
+                this.logger.info(`[PULL] Requesting ${serviceId} via Serial (${requestId})`);
+            } else {
+                throw new Error('No transport available to call service');
+            }
+
+            return new Promise((resolve, reject) => {
+                const timer = setTimeout(() => {
+                    this.pendingRequests.delete(requestId);
+                    reject(new Error(`Service call timeout: ${serviceId}`));
+                }, timeout);
+
+                this.pendingRequests.set(requestId, {
+                    resolve,
+                    reject,
+                    timer,
+                    chunks: [], // For reassembly
+                    totalChunks: 0
+                });
             });
-            this.logger.info(`[PULL] Requesting ${serviceId} -> dst=${targetDst} (${requestId})`);
-        } else if (this.scheduler) {
-            this.scheduler.enqueue(PT.CALL, 0, payload, 1);
-            this.logger.info(`[PULL] Requesting ${serviceId} via Serial (${requestId})`);
-        } else {
-            throw new Error('No transport available to call service');
         }
 
-        return new Promise((resolve, reject) => {
-            const timer = setTimeout(() => {
-                this.pendingRequests.delete(requestId);
-                reject(new Error(`Service call timeout: ${serviceId}`));
-            }, timeout);
+        // 3. 回退：如果既不是远程服务也无网络路径，且本地注册了该服务，在本地执行
+        if (this.localServices.has(serviceId)) {
+            return await this._callLocalService(serviceId, params);
+        }
 
-            this.pendingRequests.set(requestId, {
-                resolve,
-                reject,
-                timer,
-                chunks: [], // For reassembly
-                totalChunks: 0
-            });
-        });
     }
 
     /**
@@ -691,27 +706,35 @@ class HttpProxyService extends EventEmitter {
         const targetCaller = caller || (frame.route ? frame.route.src : '*');
         const network = (this.identity && this.identity.network) || '';
         const nodeName = (this.identity && this.identity.nodeName) || '';
+        const nodeId = (this.identity && this.identity.nodeId) || '';
 
-        let services = Array.from(this.localServices.values()).map(s => ({
-            id: s.id,
-            globalId: network ? `${network}/${s.id}` : s.id,
-            name: s.name,
-            description: s.description,
-            version: s.version,
-            mode: s.mode,          // 对端需要知道是否为网关模式
-            method: s.method,
-            enabled: s.enabled,
-            params: s.params,
-            status: s.status,
-            network,
-            nodeName
-        }));
+        let services = Array.from(this.localServices.values()).map(s => {
+            const globalId = (network && nodeName)
+                ? `${network}/${nodeName}/${s.id}`
+                : (network ? `${network}/${s.id}` : s.id);
+
+            return {
+                id: s.id,
+                globalId,
+                name: s.name,
+                description: s.description,
+                version: s.version,
+                mode: s.mode,          // 对端需要知道是否为网关模式
+                method: s.method,
+                enabled: s.enabled,
+                params: s.params,
+                status: s.status,
+                network,
+                nodeName,
+                nodeId
+            };
+        });
 
         if (filter && filter.enabled) {
             services = services.filter(s => s.enabled);
         }
 
-        const resp = JSON.stringify({ id, services, network, nodeName });
+        const resp = JSON.stringify({ id, services, network, nodeName, nodeId });
 
         if (this.routeEngine && targetCaller) {
             this.routeEngine.send({
@@ -729,29 +752,95 @@ class HttpProxyService extends EventEmitter {
         let resp;
         try { resp = JSON.parse(frame.body.toString()); } catch (e) { return; }
 
-        const { id, services, network, nodeName } = resp;
+        const { id, services, network, nodeName, nodeId } = resp;
         const pending = this.pendingRequests.get(id);
 
+        const net = network || (frame.route && frame.route.src && frame.route.src.includes('/') ? frame.route.src.split('/')[0] : '');
+        const node = nodeName || (frame.route && frame.route.src && frame.route.src.includes('/') ? frame.route.src.split('/')[1] : (frame.route ? frame.route.src : ''));
+        const senderTargetNode = (net && node) ? `${net}/${node}` : (frame.route ? frame.route.src : (node || null));
+
         if (Array.isArray(services)) {
+            const belongsToSender = (entry) => {
+                // 1. 物理真 ID 最高优先级匹配
+                if (nodeId && entry.nodeId) {
+                    return entry.nodeId === nodeId;
+                }
+                if (senderTargetNode && entry.targetNode) {
+                    return entry.targetNode === senderTargetNode;
+                }
+                if (node && entry.nodeName) {
+                    return entry.nodeName === node && (net ? entry.network === net : true);
+                }
+                if (frame.route && frame.route.src && entry.targetNode) {
+                    return entry.targetNode === frame.route.src;
+                }
+                if (!senderTargetNode && !entry.targetNode && !nodeId && !entry.nodeId) {
+                    return true;
+                }
+                return false;
+            };
+
+            const incomingEntries = [];
+            const newGlobalIds = new Set();
+
             services.forEach(s => {
-                const net = s.network || network || '';
-                const node = s.nodeName || nodeName || '';
-                const globalId = s.globalId || (net ? `${net}/${s.id}` : s.id);
-                const targetNode = net && node ? `${net}/${node}` : (frame.route ? frame.route.src : null);
+                const sNet = s.network || net || '';
+                const sNode = s.nodeName || node || '';
+                const sNodeId = s.nodeId || nodeId || '';
+                const globalId = s.globalId || ((sNet && sNode) ? `${sNet}/${sNode}/${s.id}` : (sNet ? `${sNet}/${s.id}` : s.id));
+                const targetNode = (sNet && sNode) ? `${sNet}/${sNode}` : (senderTargetNode || null);
 
                 const entry = {
                     ...s,
                     globalId,
-                    network: net,
-                    nodeName: node,
+                    network: sNet,
+                    nodeName: sNode,
+                    nodeId: sNodeId,
                     targetNode
                 };
-
-                this.remoteServices.set(globalId, entry);
-                if (!this.remoteServices.has(s.id)) {
-                    this.remoteServices.set(s.id, entry);
-                }
+                incomingEntries.push(entry);
+                newGlobalIds.add(globalId);
             });
+
+            // 1. 淘汰属于该节点但不在最新列表中的历史远程服务
+            const staleKeys = [];
+            for (const [key, entry] of this.remoteServices) {
+                if (belongsToSender(entry)) {
+                    if (!newGlobalIds.has(entry.globalId)) {
+                        staleKeys.push(key);
+                    }
+                }
+            }
+            for (const key of staleKeys) {
+                this.remoteServices.delete(key);
+            }
+
+            // 2. 写入/更新当前接收到的服务（支持全限定名及多级别名）
+            for (const entry of incomingEntries) {
+                // 全局三段式主键: network/nodeName/serviceId
+                this.remoteServices.set(entry.globalId, entry);
+
+                // 两段式别名: network/serviceId
+                if (entry.network && entry.globalId !== `${entry.network}/${entry.id}`) {
+                    const netAlias = `${entry.network}/${entry.id}`;
+                    if (!this.remoteServices.has(netAlias) || belongsToSender(this.remoteServices.get(netAlias))) {
+                        this.remoteServices.set(netAlias, entry);
+                    }
+                }
+
+                // 一段式短别名: serviceId
+                if (!this.remoteServices.has(entry.id)) {
+                    this.remoteServices.set(entry.id, entry);
+                } else {
+                    const existing = this.remoteServices.get(entry.id);
+                    if (belongsToSender(existing)) {
+                        this.remoteServices.set(entry.id, entry);
+                    }
+                }
+            }
+
+            // 3. 抛出远程服务更新事件
+            this.emit('remote_services_updated', this.getRemoteServices());
         }
 
         if (pending) {
@@ -797,6 +886,7 @@ class HttpProxyService extends EventEmitter {
 
     clearRemoteServices() {
         this.remoteServices.clear();
+        this.emit('remote_services_updated', []);
     }
 
     // =========================================================================
@@ -880,6 +970,60 @@ class HttpProxyService extends EventEmitter {
         return this.queryRemoteServices().catch(err => {
             this.logger.debug('Broadcast discovery timeout (expected if no peers)');
         });
+    }
+
+    /**
+     * Broadcast local service registry announcement to all peers
+     */
+    broadcastLocalServices() {
+        const network = (this.identity && this.identity.network) || '';
+        const nodeName = (this.identity && this.identity.nodeName) || '';
+        const nodeId = (this.identity && this.identity.nodeId) || '';
+
+        const services = Array.from(this.localServices.values()).map(s => {
+            const globalId = (network && nodeName)
+                ? `${network}/${nodeName}/${s.id}`
+                : (network ? `${network}/${s.id}` : s.id);
+
+            return {
+                id: s.id,
+                globalId,
+                name: s.name,
+                description: s.description,
+                version: s.version,
+                mode: s.mode,
+                method: s.method,
+                enabled: s.enabled,
+                params: s.params,
+                status: s.status,
+                network,
+                nodeName,
+                nodeId
+            };
+        });
+
+        const resp = JSON.stringify({
+            id: 'announce_' + Date.now(),
+            services,
+            network,
+            nodeName,
+            nodeId
+        });
+
+        try {
+            if (this.routeEngine) {
+                this.routeEngine.send({
+                    type: PT.LIST,
+                    dst: '*',
+                    payload: Buffer.from(resp),
+                    priority: 1
+                });
+            } else if (this.scheduler) {
+                this.scheduler.enqueue(PT.LIST, 0, Buffer.from(resp), 1);
+            }
+        } catch (err) {
+            this.logger.warn('Failed to broadcast local services:', err.message);
+        }
     }
 }
 

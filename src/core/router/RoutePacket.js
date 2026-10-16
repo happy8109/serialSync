@@ -79,24 +79,29 @@ class RoutePacket {
      * @param {string} localNodeName - 本机节点名，如 "A1"
      * @returns {boolean}
      */
-    matchesDestination(localNetwork, localNodeName) {
+    matchesDestination(localNetwork, localNodeName, localNodeId = '') {
         // 1. 全网广播
         if (this.isBroadcast()) return true;
 
         const [dstNet, dstNode] = this.dst.split('/');
 
-        // 2. 网络内广播 (如 "A网/*")
+        // 2. 匹配本机底层真 ID (8位纯字母)
+        if (localNodeId && (this.dst === localNodeId || dstNode === localNodeId || dstNet === localNodeId)) {
+            return true;
+        }
+
+        // 3. 网络内广播 (如 "A网/*")
         if (dstNet === localNetwork && (dstNode === '*' || !dstNode)) {
             return true;
         }
 
-        // 3. 单播精确匹配 (如 "A网/A1")
-        if (dstNet === localNetwork && dstNode === localNodeName) {
+        // 4. 单播精确匹配 (如 "A网/A1" 或 "A网/nodeId")
+        if (dstNet === localNetwork && (dstNode === localNodeName || (localNodeId && dstNode === localNodeId))) {
             return true;
         }
 
-        // 4. 单段匹配 (无网络前缀，仅匹配节点名)
-        if (!dstNode && dstNet === localNodeName) {
+        // 5. 单段匹配 (无网络前缀，仅匹配节点名或真 ID)
+        if (!dstNode && (dstNet === localNodeName || (localNodeId && dstNet === localNodeId))) {
             return true;
         }
 

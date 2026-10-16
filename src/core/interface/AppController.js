@@ -20,6 +20,27 @@ const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
 const appLogger = logger.create('App');
 
+/**
+ * 生成 8 位字母加数字真 ID (混合小写字母与数字，不含下划线)
+ */
+function generateNodeId() {
+    const letters = 'abcdefghijklmnopqrstuvwxyz';
+    const numbers = '0123456789';
+    const all = letters + numbers;
+    let id = '';
+    while (true) {
+        id = '';
+        for (let i = 0; i < 8; i++) {
+            id += all.charAt(Math.floor(Math.random() * all.length));
+        }
+        // 保证既包含字母又包含数字
+        if (/[a-z]/.test(id) && /[0-9]/.test(id)) {
+            break;
+        }
+    }
+    return id;
+}
+
 class AppController extends EventEmitter {
     constructor(options = {}) {
         super();
@@ -80,8 +101,29 @@ class AppController extends EventEmitter {
             this.tunnelService.setConfig(config.get('tunnel'));
         }
 
+        // 初始化底层真 ID (8位字母加数字，不含下划线)
+        let nodeId = config.has('identity.nodeId') ? config.get('identity.nodeId') : null;
+        if (!nodeId || !/^[a-z0-9]{8}$/.test(nodeId) || !/[a-z]/.test(nodeId) || !/[0-9]/.test(nodeId)) {
+            nodeId = generateNodeId();
+            try {
+                const fs = require('fs');
+                const path = require('path');
+                const configPath = path.join(process.cwd(), 'config', 'default.json');
+                if (fs.existsSync(configPath)) {
+                    const cur = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+                    if (!cur.identity) cur.identity = {};
+                    cur.identity.nodeId = nodeId;
+                    fs.writeFileSync(configPath, JSON.stringify(cur, null, 2), 'utf8');
+                    appLogger.info(`[身份] 首次生成并固化本机底层真 ID: ${nodeId}`);
+                }
+            } catch (err) {
+                appLogger.warn('Failed to persist nodeId to config file:', err.message);
+            }
+        }
+
         // 初始化身份和中继配置
         const defaultIdentity = {
+            nodeId,
             nodeName: config.has('identity.nodeName') ? config.get('identity.nodeName') : os.hostname(),
             network: config.has('identity.network') ? config.get('identity.network') : ''
         };
@@ -94,6 +136,9 @@ class AppController extends EventEmitter {
         this.routeEngine.setIdentity(defaultIdentity);
         this.httpProxyService.setIdentity(defaultIdentity);
         this.httpProxyService.setRouteEngine(this.routeEngine);
+        this.httpProxyService.on('remote_services_updated', (services) => {
+            this.emit('remote_services', services);
+        });
 
         // 注册物理串口链路到路由引擎
         this.routeEngine.registerLink('serial', {
@@ -378,7 +423,12 @@ class AppController extends EventEmitter {
                 currentConfig.syncTasks = config.syncTasks;
             }
             if (config.identity) {
+                const preservedNodeId = currentConfig.identity?.nodeId;
                 currentConfig.identity = { ...currentConfig.identity, ...config.identity };
+                // 确保不可变的 8 位真 ID 不会被前端意外抹除
+                if (preservedNodeId && (!currentConfig.identity.nodeId || !/^[a-z0-9]{8}$/.test(currentConfig.identity.nodeId))) {
+                    currentConfig.identity.nodeId = preservedNodeId;
+                }
             }
             if (config.relay) {
                 currentConfig.relay = { ...currentConfig.relay, ...config.relay };
@@ -649,7 +699,8 @@ class AppController extends EventEmitter {
             peerActivities: this.fileSyncService.getPeerActivities(),
             relayStatus: this.relayService ? this.relayService.getStatus() : null,
             routingStatus: this.routeEngine ? this.routeEngine.getStatus() : null,
-            tunnelStatus: this.tunnelService ? this.tunnelService.getStatus() : null
+            tunnelStatus: this.tunnelService ? this.tunnelService.getStatus() : null,
+            remoteServices: this.httpProxyService.getRemoteServices()
         };
     }
 

@@ -105,7 +105,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
             const identityVals = cfg.identity || {};
             setIdentityConfig({
                 network: identityVals.network || '',
-                nodeName: identityVals.nodeName || ''
+                nodeName: identityVals.nodeName || '',
+                nodeId: identityVals.nodeId || ''
             });
 
             // 5. Relay Config
@@ -140,7 +141,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
 
     const [identityConfig, setIdentityConfig] = useState({
         network: '',
-        nodeName: ''
+        nodeName: '',
+        nodeId: ''
     });
 
     const [relayConfig, setRelayConfig] = useState({
@@ -253,7 +255,8 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 },
                 identity: {
                     network: identityConfig.network.trim(),
-                    nodeName: identityConfig.nodeName.trim()
+                    nodeName: identityConfig.nodeName.trim(),
+                    nodeId: identityConfig.nodeId
                 },
                 relay: {
                     peers: relayConfig.peers.filter(Boolean)
@@ -582,7 +585,21 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                 <p className="text-xs text-muted-foreground">
                                     定义本节点在多网级联拓扑中的身份，用于网络层三层路由寻址、服务发现与跨网调用。
                                 </p>
-                                <div className="grid grid-cols-2 gap-4">
+                                <div className="grid grid-cols-3 gap-4">
+                                    <div className="space-y-2">
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-sm font-medium">底层真 ID (不可变)</label>
+                                            <span className="text-[10px] text-muted-foreground">8位字母+数字</span>
+                                        </div>
+                                        <input
+                                            type="text"
+                                            value={identityConfig.nodeId || '--'}
+                                            readOnly
+                                            disabled
+                                            className="w-full px-3 py-2 rounded-md border border-input bg-muted/60 text-muted-foreground font-mono text-sm cursor-not-allowed select-all"
+                                            title="底层不可变物理真 ID (8-char Alphanumeric)"
+                                        />
+                                    </div>
                                     <div className="space-y-2">
                                         <label className="text-sm font-medium">所属网络 (Network)</label>
                                         <input
