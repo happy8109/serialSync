@@ -12,6 +12,7 @@ class MessageService extends EventEmitter {
     constructor() {
         super();
         this.scheduler = null;
+        this.routeEngine = null;
         this.maxLength = config.has('message.maxLength') ? config.get('message.maxLength') : 4096;
 
         // 节点身份信息（由 AppController 注入）
@@ -31,6 +32,14 @@ class MessageService extends EventEmitter {
      */
     setScheduler(scheduler) {
         this.scheduler = scheduler;
+    }
+
+    /**
+     * 注入路由引擎
+     * @param {RouteEngine} routeEngine
+     */
+    setRouteEngine(routeEngine) {
+        this.routeEngine = routeEngine;
     }
 
     /**
@@ -119,10 +128,22 @@ class MessageService extends EventEmitter {
             throw new Error(`Message too long (max ${this.maxLength} bytes)`);
         }
 
-        // 使用 P1 (Interactive) 优先级
-        this.scheduler.enqueue(0x10, 0, body, 1);
+        // 优先使用路由引擎全网广播 (向串口与所有 LAN Peer 泛洪)
+        if (this.routeEngine) {
+            this.routeEngine.send({
+                type: 0x10,
+                dst: '*',
+                payload: body,
+                priority: 1
+            });
+        } else if (this.scheduler) {
+            // 回退兼容直接注入串口调度器
+            this.scheduler.enqueue(0x10, 0, body, 1);
+        } else {
+            throw new Error('No transport available to send message');
+        }
 
-        return payload; // 返回完整 payload 供 relay 转发使用
+        return payload;
     }
 }
 

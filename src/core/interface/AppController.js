@@ -14,6 +14,9 @@ const FileTransferService = require('../services/FileTransferService');
 const HttpProxyService = require('../services/HttpProxyService');
 const FileSyncService = require('../services/FileSyncService');
 const RelayService = require('../services/RelayService');
+const TunnelService = require('../services/TunnelService');
+const RouteEngine = require('../router/RouteEngine');
+const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
 const appLogger = logger.create('App');
 
@@ -35,6 +38,10 @@ class AppController extends EventEmitter {
         this.httpProxyService = new HttpProxyService();
         this.fileSyncService = new FileSyncService();
         this.relayService = new RelayService();
+        this.tunnelService = new TunnelService();
+
+        // 初始化网络层统一路由引擎
+        this.routeEngine = new RouteEngine();
 
         // 注册服务
         this.serviceManager.register(this.messageService);
@@ -43,6 +50,7 @@ class AppController extends EventEmitter {
         this.serviceManager.register(this.httpProxyService);
         this.serviceManager.register(this.fileSyncService);
         this.serviceManager.register(this.relayService);
+        this.serviceManager.register(this.tunnelService);
 
         // 注入依赖
         this.fileSyncService.setScheduler(this.scheduler);
@@ -68,15 +76,53 @@ class AppController extends EventEmitter {
             this.fileSyncService.updateTasks(config.get('syncTasks'));
         }
 
+        if (config.has('tunnel')) {
+            this.tunnelService.setConfig(config.get('tunnel'));
+        }
+
         // 初始化身份和中继配置
         const defaultIdentity = {
             nodeName: config.has('identity.nodeName') ? config.get('identity.nodeName') : os.hostname(),
             network: config.has('identity.network') ? config.get('identity.network') : ''
         };
         this.messageService.setIdentity(defaultIdentity);
+        this.messageService.setRouteEngine(this.routeEngine);
         this.relayService.setIdentity(defaultIdentity);
+        this.relayService.setFileTransferService(this.fileTransferService);
+        this.tunnelService.setIdentity(defaultIdentity);
+        this.tunnelService.setRouteEngine(this.routeEngine);
+        this.routeEngine.setIdentity(defaultIdentity);
+        this.httpProxyService.setIdentity(defaultIdentity);
+        this.httpProxyService.setRouteEngine(this.routeEngine);
 
-        if (config.has('relay.peerUrl')) {
+        // 注册物理串口链路到路由引擎
+        this.routeEngine.registerLink('serial', {
+            type: 'serial',
+            send: (packet, priority = 1) => {
+                const body = packet.toBuffer();
+                this.scheduler.enqueue(packet.type, packet.seq, body, priority);
+                return true;
+            },
+            isReady: () => this.bridge.isConnected && this.bridge.linkReady
+        });
+
+        // 监听路由引擎交付给本机的报文
+        this.routeEngine.on('local_packet', (packet) => {
+            const frame = {
+                type: packet.type,
+                seq: packet.seq,
+                body: packet.payload,
+                route: packet
+            };
+            this.serviceManager.handleFrame(frame);
+        });
+
+        // 绑定 RelayService 到 RouteEngine
+        this.relayService.setRouteEngine(this.routeEngine);
+
+        if (config.has('relay.peers')) {
+            this.relayService.setPeers(config.get('relay.peers'));
+        } else if (config.has('relay.peerUrl')) {
             this.relayService.setPeerUrl(config.get('relay.peerUrl'));
         }
 
@@ -95,8 +141,9 @@ class AppController extends EventEmitter {
 
         // 心跳联动：对端离线/上线
         this.bridge.on('linkLost', () => {
-            appLogger.warn('[心跳] 对端离线，清空远程服务缓存');
+            appLogger.warn('[心跳] 对端离线，清空远程服务缓存并回收活跃隧道会话');
             this.httpProxyService.clearRemoteServices();
+            this.tunnelService.closeAllSessions();
             this.emit('status', this.getStatus());
         });
         this.bridge.on('linkReady', () => {
@@ -111,6 +158,17 @@ class AppController extends EventEmitter {
 
         // 监听收到数据帧 -> 分发给服务
         this.bridge.on('frame', (frame) => {
+            // 优先检查是否为 RoutePacket 网络层报文
+            if (RoutePacket.isRoutePacketBuffer(frame.body)) {
+                const routePacket = RoutePacket.fromBuffer(frame.body);
+                if (routePacket) {
+                    this.routeEngine.handleIncomingPacket(routePacket, 'serial');
+                    this.emit('frame', frame);
+                    return;
+                }
+            }
+
+            // 传统 Raw 帧向后兼容兜底分发
             this.serviceManager.handleFrame(frame);
             // 依然抛出 frame 事件供 CLI 调试显示
             this.emit('frame', frame);
@@ -119,13 +177,15 @@ class AppController extends EventEmitter {
         // 监听业务事件
         this.messageService.on('message', (msg) => {
             this.emit('chat', msg);
-            // 转发串口聊天消息到中继
-            this.relayService.forwardToRelay('serial', {
-                type: 'chat',
-                msgId: msg.msgId,
-                sender: msg.sender,
-                content: msg.text
-            });
+            // 传统模式下转发串口聊天消息到中继（路由模式下由 RouteEngine 自动处理泛洪）
+            if (!this.routeEngine && this.relayService) {
+                this.relayService.forwardToRelay('serial', {
+                    type: 'chat',
+                    msgId: msg.msgId,
+                    sender: msg.sender,
+                    content: msg.text
+                });
+            }
         });
 
         this.systemService.on('pong', (data) => {
@@ -260,9 +320,19 @@ class AppController extends EventEmitter {
         if (config.identity) {
             this.messageService.setIdentity(config.identity);
             this.relayService.setIdentity(config.identity);
+            this.routeEngine.setIdentity(config.identity);
+            this.httpProxyService.setIdentity(config.identity);
+            this.tunnelService.setIdentity(config.identity);
         }
-        if (config.relay && config.relay.peerUrl !== undefined) {
-            this.relayService.setPeerUrl(config.relay.peerUrl);
+        if (config.relay) {
+            if (config.relay.peers !== undefined) {
+                this.relayService.setPeers(config.relay.peers);
+            } else if (config.relay.peerUrl !== undefined) {
+                this.relayService.setPeerUrl(config.relay.peerUrl);
+            }
+        }
+        if (config.tunnel) {
+            this.tunnelService.setConfig(config.tunnel);
         }
 
         // 3. 运行时热更新: 系统选项
@@ -313,6 +383,9 @@ class AppController extends EventEmitter {
             if (config.relay) {
                 currentConfig.relay = { ...currentConfig.relay, ...config.relay };
             }
+            if (config.tunnel) {
+                currentConfig.tunnel = { ...currentConfig.tunnel, ...config.tunnel };
+            }
             if (config.system) {
                 // Map UI system config to actual file config structure
                 if (config.system.serviceDiscovery !== undefined) {
@@ -357,7 +430,8 @@ class AppController extends EventEmitter {
      */
     sendChat(text, senderOverride = {}) {
         const payload = this.messageService.sendMessage(text, senderOverride);
-        if (this.relayService) {
+        // 传统模式回退转发（路由模式下 sendMessage 已通过 RouteEngine 广播）
+        if (!this.routeEngine && this.relayService) {
             this.relayService.forwardToRelay('local', payload);
         }
         return payload;
@@ -573,11 +647,25 @@ class AppController extends EventEmitter {
             queueStats: this.scheduler.getStatus(),
             discoveredShares: this.fileSyncService.getDiscoveredShares(), // Expose discovered shares in status
             peerActivities: this.fileSyncService.getPeerActivities(),
-            relayStatus: this.relayService ? this.relayService.getStatus() : null
+            relayStatus: this.relayService ? this.relayService.getStatus() : null,
+            routingStatus: this.routeEngine ? this.routeEngine.getStatus() : null,
+            tunnelStatus: this.tunnelService ? this.tunnelService.getStatus() : null
         };
     }
 
-    // ================= API Proxy Methods =================
+    // ================= API Proxy & Tunnel Methods =================
+
+    startTunnel(tunnelConfig) {
+        return this.tunnelService.startTunnel(tunnelConfig);
+    }
+
+    stopTunnel(id) {
+        return this.tunnelService.stopTunnel(id);
+    }
+
+    getTunnelStatus() {
+        return this.tunnelService ? this.tunnelService.getStatus() : null;
+    }
 
     async pullService(serviceId, params) {
         return await this.httpProxyService.pullService(serviceId, params);

@@ -17,6 +17,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
 const relayLogger = logger.create('Relay');
 
@@ -32,17 +33,15 @@ class RelayService extends EventEmitter {
     constructor() {
         super();
         this.scheduler = null;
+        this.routeEngine = null; // 路由引擎引用
 
-        // LAN 对端配置
-        this.peerUrl = null;        // ws://IP:PORT/relay
-        this.peerWs = null;         // 活跃的 WebSocket 连接（无论主从）
-        this.peerIdentity = null;   // 对端身份信息
-        this.relayReady = false;    // 中继链路是否就绪
+        // 多 Peer 配置与会话
+        this.peerUrls = [];         // 配置的所有对端 URL 列表 [ws://IP:PORT/relay]
+        this.peerManagers = new Map(); // url -> { url, isClient, reconnectTimer, reconnectDelay }
+        this.peers = new Map();     // peerKey -> { id, ws, identity, url, isClient, linkId }
 
-        // 连接策略
-        this.isClient = false;      // 本节点是否为客户端角色（IP 较小方）
-        this.reconnectTimer = null;
-        this.reconnectDelay = 3000; // 初始重连延迟
+        // 重连策略默认值
+        this.defaultReconnectDelay = 3000;
         this.maxReconnectDelay = 30000;
 
         // 节点身份
@@ -66,6 +65,9 @@ class RelayService extends EventEmitter {
 
         // 文件 ID → 文件路径映射（由文件通知填充）
         this.fileIndex = new Map();
+
+        // 文件传输引擎引用（防并发重复拉取）
+        this.fileTransferService = null;
     }
 
     /**
@@ -73,6 +75,14 @@ class RelayService extends EventEmitter {
      */
     setScheduler(scheduler) {
         this.scheduler = scheduler;
+    }
+
+    /**
+     * 注入文件传输引擎
+     * @param {FileTransferService} fileTransferService
+     */
+    setFileTransferService(fileTransferService) {
+        this.fileTransferService = fileTransferService;
     }
 
     /**
@@ -84,13 +94,97 @@ class RelayService extends EventEmitter {
     }
 
     /**
-     * 设置 LAN 对端地址并启动连接
+     * 向后兼容属性获取器
+     */
+    get peerWs() {
+        for (const peer of this.peers.values()) {
+            if (peer.ws && peer.ws.readyState === WebSocket.OPEN) return peer.ws;
+        }
+        return null;
+    }
+
+    get peerIdentity() {
+        for (const peer of this.peers.values()) {
+            if (peer.identity) return peer.identity;
+        }
+        return null;
+    }
+
+    get relayReady() {
+        for (const peer of this.peers.values()) {
+            if (peer.ws && peer.ws.readyState === WebSocket.OPEN) return true;
+        }
+        return false;
+    }
+
+    get isClient() {
+        for (const mgr of this.peerManagers.values()) {
+            if (mgr.isClient) return true;
+        }
+        return false;
+    }
+
+    get peerUrl() {
+        return this.peerUrls.length > 0 ? this.peerUrls[0] : null;
+    }
+
+    set peerUrl(url) {
+        if (url) {
+            this.setPeers([url]);
+        }
+    }
+
+    /**
+     * 注入路由引擎
+     * @param {RouteEngine} routeEngine
+     */
+    setRouteEngine(routeEngine) {
+        this.routeEngine = routeEngine;
+    }
+
+    /**
+     * 设置 LAN 对端地址列表 (支持多 Peer) 并启动连接
+     * @param {string|string[]} urls - 单个 URL 或 URL 数组
+     */
+    setPeers(urls) {
+        if (!urls) urls = [];
+        if (typeof urls === 'string') {
+            urls = urls.split(',').map(u => u.trim()).filter(Boolean);
+        } else if (!Array.isArray(urls)) {
+            urls = [urls];
+        }
+
+        const validUrls = urls.filter(u => typeof u === 'string' && u.startsWith('ws'));
+        this.peerUrls = validUrls;
+
+        // 停止不再需要的对端连接
+        for (const [url, mgr] of this.peerManagers) {
+            if (!validUrls.includes(url)) {
+                if (mgr.reconnectTimer) clearTimeout(mgr.reconnectTimer);
+                this.peerManagers.delete(url);
+                for (const [key, peer] of this.peers) {
+                    if (peer.url === url) {
+                        try { peer.ws.close(); } catch (e) {}
+                    }
+                }
+            }
+        }
+
+        // 启动新增对端的管理器
+        for (const url of validUrls) {
+            this._startPeerManager(url);
+        }
+    }
+
+    /**
+     * 设置单个 LAN 对端地址 (兼容旧 API)
      * @param {string} url - ws://IP:PORT/relay
      */
     setPeerUrl(url) {
-        this.peerUrl = url;
         if (url) {
-            this._determineRole();
+            this.setPeers([url]);
+        } else {
+            this.setPeers([]);
         }
     }
 
@@ -119,152 +213,190 @@ class RelayService extends EventEmitter {
     }
 
     // =====================================================================
-    // WebSocket 连接管理
+    // WebSocket 连接管理 (多 Peer 支持)
     // =====================================================================
 
     /**
-     * 确定本节点的角色（客户端/服务端）并启动连接
-     * 规则：IP 值较小的一方作为客户端主动连接
+     * 启动对某个 Peer URL 的状态管理
      */
-    _determineRole() {
-        try {
-            const peerUrlObj = new URL(this.peerUrl);
-            const peerHost = peerUrlObj.hostname;
+    _startPeerManager(url) {
+        if (this.peerManagers.has(url)) return;
 
-            // 获取本机所有 IPv4 地址
-            const localIPs = this._getLocalIPs();
+        const isClient = this._determineRoleForUrl(url);
+        const manager = {
+            url,
+            isClient,
+            reconnectTimer: null,
+            reconnectDelay: this.defaultReconnectDelay
+        };
+        this.peerManagers.set(url, manager);
 
-            // 比较：如果本机任一 IP < 对端 IP，则本机为客户端
-            const peerIP = this._ipToNumber(peerHost);
-            this.isClient = localIPs.some(ip => this._ipToNumber(ip) < peerIP);
+        relayLogger.info(`[中继] 对端管理启动: ${url}, 角色=${isClient ? '客户端(主动连接)' : '服务端(等待连入)'}`);
 
-            relayLogger.info(`[中继] 角色判定: 本机=${this.isClient ? '客户端(主动连接)' : '服务端(等待连入)'}, 对端=${peerHost}`);
-
-            if (this.isClient) {
-                this._connectToPeer();
-            }
-            // 服务端角色由 ApiServer 调用 handlePeerConnection() 处理
-        } catch (err) {
-            relayLogger.error(`[中继] 角色判定失败: ${err.message}`);
+        if (isClient) {
+            this._connectToPeerUrl(manager);
         }
     }
 
     /**
-     * 作为客户端连接 LAN 对端
+     * 判定本节点对特定 URL 的角色
+     * 规则：IP 值较小的一方作为客户端主动连接
      */
-    _connectToPeer() {
-        if (!this.peerUrl || !this.isClient) return;
-        if (this.peerWs && this.peerWs.readyState === WebSocket.OPEN) return;
+    _determineRoleForUrl(targetUrl) {
+        try {
+            const peerUrlObj = new URL(targetUrl);
+            const peerHost = peerUrlObj.hostname;
+            const localIPs = this._getLocalIPs();
+            const peerIP = this._ipToNumber(peerHost);
+            return localIPs.some(ip => this._ipToNumber(ip) < peerIP);
+        } catch (err) {
+            relayLogger.error(`[中继] 角色判定异常 (${targetUrl}): ${err.message}`);
+            return true;
+        }
+    }
 
-        relayLogger.info(`[中继] 正在连接对端: ${this.peerUrl}`);
+    /**
+     * 作为客户端连接指定 LAN 对端
+     */
+    _connectToPeerUrl(manager) {
+        if (!manager.isClient || !manager.url) return;
+
+        // 若已有活跃连接则无需重连
+        for (const peer of this.peers.values()) {
+            if (peer.url === manager.url && peer.ws && peer.ws.readyState === WebSocket.OPEN) {
+                return;
+            }
+        }
+
+        relayLogger.info(`[中继] 正在主动连接对端: ${manager.url}`);
 
         try {
-            const ws = new WebSocket(this.peerUrl);
+            const ws = new WebSocket(manager.url);
 
             ws.on('open', () => {
-                relayLogger.info(`[中继] 已连接到对端: ${this.peerUrl}`);
-                this._onPeerConnected(ws);
-                // 重置重连延迟
-                this.reconnectDelay = 3000;
+                relayLogger.info(`[中继] 已成功连入对端: ${manager.url}`);
+                manager.reconnectDelay = this.defaultReconnectDelay;
+                this._onPeerConnected(ws, { url: manager.url, isClient: true, manager });
             });
 
             ws.on('error', (err) => {
-                relayLogger.debug(`[中继] 连接错误: ${err.message}`);
+                relayLogger.debug(`[中继] 对端连接错误 (${manager.url}): ${err.message}`);
             });
 
             ws.on('close', () => {
-                relayLogger.warn(`[中继] 与对端的连接已断开`);
-                this._onPeerDisconnected();
-                this._scheduleReconnect();
+                relayLogger.warn(`[中继] 与对端的连接断开 (${manager.url})`);
+                this._scheduleReconnect(manager);
             });
         } catch (err) {
-            relayLogger.error(`[中继] 连接异常: ${err.message}`);
-            this._scheduleReconnect();
+            relayLogger.error(`[中继] 连接异常 (${manager.url}): ${err.message}`);
+            this._scheduleReconnect(manager);
         }
     }
 
     /**
      * 安排重连（指数退避）
      */
-    _scheduleReconnect() {
-        if (!this.isClient || !this.peerUrl) return;
-        if (this.reconnectTimer) return;
+    _scheduleReconnect(manager) {
+        if (!manager.isClient || !manager.url) return;
+        if (manager.reconnectTimer) return;
 
-        relayLogger.info(`[中继] ${this.reconnectDelay / 1000}s 后重连...`);
-        this.reconnectTimer = setTimeout(() => {
-            this.reconnectTimer = null;
-            this._connectToPeer();
-        }, this.reconnectDelay);
+        relayLogger.info(`[中继] ${manager.reconnectDelay / 1000}s 后重试连接: ${manager.url}`);
+        manager.reconnectTimer = setTimeout(() => {
+            manager.reconnectTimer = null;
+            this._connectToPeerUrl(manager);
+        }, manager.reconnectDelay);
 
-        // 指数退避
-        this.reconnectDelay = Math.min(this.reconnectDelay * 2, this.maxReconnectDelay);
+        manager.reconnectDelay = Math.min(manager.reconnectDelay * 2, this.maxReconnectDelay);
     }
 
     /**
-     * 处理来自 ApiServer 的对端 WebSocket 连接（服务端角色）
+     * 处理来自 ApiServer 的对端 WebSocket 连接（服务端模式连入）
      * @param {WebSocket} ws
      */
     handlePeerConnection(ws) {
-        relayLogger.info(`[中继] 对端已连入 (服务端模式)`);
-        this._onPeerConnected(ws);
-
-        ws.on('close', () => {
-            relayLogger.warn(`[中继] 对端连接已断开 (服务端模式)`);
-            this._onPeerDisconnected();
-        });
+        relayLogger.info(`[中继] 外部对端已连入 (服务端模式)`);
+        this._onPeerConnected(ws, { isClient: false });
     }
 
     /**
-     * 对端连接建立后的通用处理
+     * 对端连接建立后的通用初始化处理
      */
-    _onPeerConnected(ws) {
-        this.peerWs = ws;
-        this.relayReady = true;
+    _onPeerConnected(ws, options = {}) {
+        const peerId = options.url || `peer_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        const peerEntry = {
+            id: peerId,
+            ws,
+            url: options.url || null,
+            isClient: !!options.isClient,
+            identity: null,
+            linkId: null
+        };
 
-        // 设置消息处理
+        this.peers.set(peerId, peerEntry);
+
+        // 监听对端消息
         ws.on('message', (data) => {
             try {
                 const msg = JSON.parse(data.toString());
-                this._handlePeerMessage(msg);
+                this._handlePeerMessage(msg, peerEntry);
             } catch (err) {
                 relayLogger.error(`[中继] 解析对端消息失败: ${err.message}`);
             }
         });
 
-        // 发送握手
-        this._sendToPeer({
-            action: 'handshake',
-            data: {
-                nodeName: this.identity.nodeName,
-                network: this.identity.network
-            }
+        // 监听对端断开
+        ws.on('close', () => {
+            this._onPeerDisconnected(peerEntry);
         });
 
-        this.emit('relay_status', { relayReady: true });
+        // 发送握手
+        try {
+            ws.send(JSON.stringify({
+                action: 'handshake',
+                data: {
+                    nodeName: this.identity.nodeName,
+                    network: this.identity.network
+                }
+            }));
+        } catch (err) {
+            relayLogger.error(`[中继] 发送握手失败: ${err.message}`);
+        }
+
+        this.emit('relay_status', this.getStatus());
     }
 
     /**
      * 对端连接断开后的处理
      */
-    _onPeerDisconnected() {
-        this.peerWs = null;
-        this.peerIdentity = null;
-        this.relayReady = false;
-        this.emit('relay_status', { relayReady: false });
+    _onPeerDisconnected(peerEntry) {
+        relayLogger.warn(`[中继] 对端连接注销: ${peerEntry.id} (node=${peerEntry.identity ? peerEntry.identity.nodeName : 'unknown'})`);
+
+        // 从 RouteEngine 注销链路
+        if (this.routeEngine && peerEntry.linkId) {
+            this.routeEngine.unregisterLink(peerEntry.linkId);
+        }
+
+        this.peers.delete(peerEntry.id);
+        this.emit('relay_status', this.getStatus());
     }
 
     /**
-     * 向 LAN 对端发送 JSON 消息
+     * 向 LAN 对端广播 JSON 消息 (发送至所有活跃连接)
      */
     _sendToPeer(msg) {
-        if (!this.peerWs || this.peerWs.readyState !== WebSocket.OPEN) return false;
-        try {
-            this.peerWs.send(JSON.stringify(msg));
-            return true;
-        } catch (err) {
-            relayLogger.error(`[中继] 发送给对端失败: ${err.message}`);
-            return false;
+        let sentCount = 0;
+        const raw = typeof msg === 'string' ? msg : JSON.stringify(msg);
+        for (const peer of this.peers.values()) {
+            if (peer.ws && peer.ws.readyState === WebSocket.OPEN) {
+                try {
+                    peer.ws.send(raw);
+                    sentCount++;
+                } catch (err) {
+                    relayLogger.error(`[中继] 发送给对端 ${peer.id} 失败: ${err.message}`);
+                }
+            }
         }
+        return sentCount > 0;
     }
 
     // =====================================================================
@@ -298,13 +430,49 @@ class RelayService extends EventEmitter {
     /**
      * 处理从 LAN 对端收到的消息
      */
-    _handlePeerMessage(msg) {
+    _handlePeerMessage(msg, peerEntry) {
         const { action, data } = msg;
 
         switch (action) {
             case 'handshake':
-                this.peerIdentity = data;
+                if (peerEntry) {
+                    peerEntry.identity = data;
+                }
                 relayLogger.info(`[中继] 对端握手: ${data.network ? '[' + data.network + '] ' : ''}${data.nodeName}`);
+
+                // 注册该 LAN 对端为 RouteEngine 的通信链路
+                if (this.routeEngine && data.nodeName) {
+                    const linkId = `lan:${data.nodeName}`;
+                    if (peerEntry) peerEntry.linkId = linkId;
+
+                    this.routeEngine.registerLink(linkId, {
+                        type: 'lan',
+                        send: (packet, priority = 1) => {
+                            if (peerEntry && peerEntry.ws && peerEntry.ws.readyState === WebSocket.OPEN) {
+                                peerEntry.ws.send(JSON.stringify({
+                                    action: 'route_packet',
+                                    packet: packet.toJSON()
+                                }));
+                                return true;
+                            }
+                            return false;
+                        },
+                        isReady: () => peerEntry && peerEntry.ws && peerEntry.ws.readyState === WebSocket.OPEN
+                    });
+                }
+                break;
+
+            case 'route_packet':
+                // 网络层统一定向/广播报文交付
+                if (this.routeEngine && msg.packet) {
+                    try {
+                        const routePacket = RoutePacket.fromJSON(msg.packet);
+                        const fromLinkId = (peerEntry && peerEntry.linkId) ? peerEntry.linkId : `lan:${peerEntry ? peerEntry.id : 'unknown'}`;
+                        this.routeEngine.handleIncomingPacket(routePacket, fromLinkId);
+                    } catch (err) {
+                        relayLogger.error(`[中继] 解析 route_packet 失败: ${err.message}`);
+                    }
+                }
                 break;
 
             case 'chat':
@@ -378,8 +546,10 @@ class RelayService extends EventEmitter {
             // 本地 WebUI 广播
             this.emit('relay_file_notify', data);
 
-            // 转发给 relay 对端
-            this._sendToPeer({ action: 'file_notify', data });
+            // 传统模式下转发给 relay 对端 (路由模式下由 RouteEngine 自动处理泛洪)
+            if (!this.routeEngine) {
+                this._sendToPeer({ action: 'file_notify', data });
+            }
         } catch (err) {
             relayLogger.error(`[中继] 解析串口文件通知失败: ${err.message}`);
         }
@@ -400,8 +570,8 @@ class RelayService extends EventEmitter {
         // 本地 WebUI 广播
         this.emit('relay_file_notify', data);
 
-        // 注入串口发送（继续向下一跳传播）
-        if (this.scheduler) {
+        // 传统模式下注入串口发送（路由模式下由 RouteEngine 自动处理泛洪）
+        if (!this.routeEngine && this.scheduler) {
             const body = Buffer.from(JSON.stringify(data), 'utf8');
             this.scheduler.enqueue(PT.FILE_NOTIFY, 0, body, 1);
         }
@@ -432,13 +602,22 @@ class RelayService extends EventEmitter {
         // 标记已见（防止自己再处理）
         this._markSeen(msgId);
 
-        // 转发给 relay 对端
-        this._sendToPeer({ action: 'file_notify', data });
+        const body = Buffer.from(JSON.stringify(data), 'utf8');
 
-        // 注入串口发送
-        if (this.scheduler) {
-            const body = Buffer.from(JSON.stringify(data), 'utf8');
-            this.scheduler.enqueue(PT.FILE_NOTIFY, 0, body, 1);
+        // 优先使用路由引擎全网广播 (向串口与所有 LAN Peer 泛洪)
+        if (this.routeEngine) {
+            this.routeEngine.send({
+                type: PT.FILE_NOTIFY,
+                dst: '*',
+                payload: body,
+                priority: 1
+            });
+        } else {
+            // 传统模式手动双发
+            this._sendToPeer({ action: 'file_notify', data });
+            if (this.scheduler) {
+                this.scheduler.enqueue(PT.FILE_NOTIFY, 0, body, 1);
+            }
         }
 
         // 本地 WebUI 广播（由 AppController 直接处理，此处不重复 emit）
@@ -454,11 +633,30 @@ class RelayService extends EventEmitter {
      * @param {string} fileName
      * @returns {Promise}
      */
+    /**
+     * WebUI 用户触发的文件拉取（由 ApiServer 调用）
+     * @param {string} fileId
+     * @param {string} fileName
+     * @returns {Promise}
+     */
     async requestFilePull(fileId, fileName) {
         // 1. 检查本地是否有文件
         const localFile = this._findLocalFile(fileId, fileName);
         if (localFile) {
             return { available: true, fullPath: localFile };
+        }
+
+        // 1.5 防死锁检测：如果本地正在通过串口接收该文件，无需向外重复请求，直接挂起等待接收完成
+        if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
+            relayLogger.info(`[中继] 本地 WebUI 拉取文件，但文件已在串口接收中: ${fileId}，进入就绪等待`);
+            const reqId = `pull_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+            this.pendingRelayPulls.set(fileId, {
+                direction: 'local',
+                requestedAt: Date.now(),
+                reqId,
+                fileName
+            });
+            return { available: false, pulling: true, reqId, status: 'receiving' };
         }
 
         // 2. 发起拉取请求
@@ -472,8 +670,17 @@ class RelayService extends EventEmitter {
             fileName
         });
 
-        // 优先通过 relay 对端拉取（LAN 快），否则通过串口请求
-        if (this.relayReady) {
+        // 优先通过路由引擎广播拉取
+        if (this.routeEngine) {
+            const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
+            this.routeEngine.send({
+                type: PT.FILE_RELAY_REQ,
+                dst: '*',
+                payload: body,
+                priority: 1
+            });
+        } else if (this.relayReady) {
+            // 优先通过 relay 对端拉取（LAN 快）
             this._sendToPeer({
                 action: 'file_pull_req',
                 data: { reqId, fileId, fileName }
@@ -500,12 +707,30 @@ class RelayService extends EventEmitter {
 
             relayLogger.info(`[中继] 串口收到文件拉取请求: ${fileName} (${fileId})`);
 
+            // 防重发：若本地正在通过串口发送该文件，忽略重复请求
+            if (this.fileTransferService && this.fileTransferService.isSending(fileId)) {
+                relayLogger.info(`[中继] 本地正在向串口发送文件 (${fileId})，忽略重复拉取请求`);
+                return;
+            }
+
             // 检查本地是否有文件
             const localFile = this._findLocalFile(fileId, fileName);
             if (localFile) {
                 relayLogger.info(`[中继] 本地找到文件，直接通过串口发送: ${localFile}`);
                 // 通知上层发起 FILE_OFFER（由 AppController 处理）
                 this.emit('relay_send_file', { fileId, fileName, fullPath: localFile });
+                return;
+            }
+
+            // 防死锁：若本地正在从串口接收该文件，将请求登记为挂起，接收完成后自动向串口回送
+            if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
+                relayLogger.info(`[中继] 本地正在接收该文件 (${fileId})，暂缓向外拉取，等待接收完成`);
+                this.pendingRelayPulls.set(fileId, {
+                    direction: 'serial',
+                    requestedAt: Date.now(),
+                    reqId,
+                    fileName
+                });
                 return;
             }
 
@@ -578,7 +803,19 @@ class RelayService extends EventEmitter {
             return;
         }
 
-        // 本地没有，记录请求方向（来自 relay），转发到串口
+        // 防死锁：检查是否正在通过串口接收该文件
+        if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
+            relayLogger.info(`[中继] 文件正在接收中 (${fileId})，暂缓向外拉取，待接收完成后自动回传`);
+            this.pendingRelayPulls.set(fileId, {
+                direction: 'relay',
+                requestedAt: Date.now(),
+                reqId,
+                fileName
+            });
+            return;
+        }
+
+        // 本地没有且未在接收，记录请求方向（来自 relay），转发到串口
         this.pendingRelayPulls.set(fileId, {
             direction: 'relay',
             requestedAt: Date.now(),
@@ -586,7 +823,16 @@ class RelayService extends EventEmitter {
             fileName
         });
 
-        if (this.scheduler) {
+        if (this.routeEngine) {
+            relayLogger.info(`[中继] 本地无文件，通过路由引擎广播文件拉取请求`);
+            const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
+            this.routeEngine.send({
+                type: PT.FILE_RELAY_REQ,
+                dst: '*',
+                payload: body,
+                priority: 1
+            });
+        } else if (this.scheduler) {
             relayLogger.info(`[中继] 本地无文件，转发拉取请求到串口`);
             const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
             this.scheduler.enqueue(PT.FILE_RELAY_REQ, 0, body, 1);
@@ -692,7 +938,7 @@ class RelayService extends EventEmitter {
     }
 
     /**
-     * 文件接收完成回调（当串口接收到文件后，检查是否有待处理的 relay 拉取请求）
+     * 文件接收完成回调（当串口接收到文件后，检查是否有待处理的 relay/local 拉取请求）
      * 由 AppController 在文件传输完成时调用
      */
     onFileReceived(fileId, fileName, fullPath) {
@@ -701,19 +947,31 @@ class RelayService extends EventEmitter {
 
         // 检查是否有待处理的中继拉取请求
         const pending = this.pendingRelayPulls.get(fileId);
-        if (pending && pending.direction === 'relay') {
-            // relay 方向请求的 → 通过 LAN 回传文件下载地址
-            relayLogger.info(`[中继] 文件到达，回传给 LAN 对端: ${fileName}`);
-            this._sendToPeer({
-                action: 'file_pull_resp',
-                data: {
-                    reqId: pending.reqId,
-                    fileId,
-                    available: true,
-                    downloadUrl: `/api/relay/file/${fileId}`
-                }
-            });
-            this.pendingRelayPulls.delete(fileId);
+        if (pending) {
+            if (pending.direction === 'relay') {
+                // relay 方向请求的 → 通过 LAN 回传文件下载地址
+                relayLogger.info(`[中继] 文件到达，回传给 LAN 对端: ${fileName}`);
+                this._sendToPeer({
+                    action: 'file_pull_resp',
+                    data: {
+                        reqId: pending.reqId,
+                        fileId,
+                        available: true,
+                        downloadUrl: `/api/relay/file/${fileId}`
+                    }
+                });
+                this.pendingRelayPulls.delete(fileId);
+            } else if (pending.direction === 'local') {
+                // 本地 WebUI 之前挂起的拉取
+                relayLogger.info(`[中继] 接收完成，通知本地 WebUI 文件已就绪: ${fileName}`);
+                this.emit('relay_pull_complete', { fileId, fileName, fullPath });
+                this.pendingRelayPulls.delete(fileId);
+            } else if (pending.direction === 'serial') {
+                // 串口方向请求的 → 发送文件至串口对端
+                relayLogger.info(`[中继] 接收完成，向串口对端发送文件: ${fileName}`);
+                this.emit('relay_send_file', { fileId, fileName, fullPath });
+                this.pendingRelayPulls.delete(fileId);
+            }
         }
     }
 
@@ -792,11 +1050,25 @@ class RelayService extends EventEmitter {
      * 获取中继状态
      */
     getStatus() {
+        const peerList = [];
+        for (const peer of this.peers.values()) {
+            peerList.push({
+                id: peer.id,
+                nodeName: peer.identity ? peer.identity.nodeName : 'unknown',
+                network: peer.identity ? peer.identity.network : '',
+                direction: peer.isClient ? 'outbound' : 'inbound',
+                url: peer.url || null
+            });
+        }
+
         return {
-            enabled: !!this.peerUrl,
+            enabled: this.peerUrls.length > 0 || this.peers.size > 0,
             relayReady: this.relayReady,
             isClient: this.isClient,
             peerUrl: this.peerUrl,
+            peerUrls: this.peerUrls,
+            peersCount: this.peers.size,
+            connectedPeers: peerList,
             pendingPulls: this.pendingRelayPulls.size
         };
     }

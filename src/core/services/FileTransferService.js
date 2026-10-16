@@ -55,6 +55,33 @@ class FileTransferService extends EventEmitter {
         bridgeLogger.info(`Config updated: chunkSize=${this.chunkSize}, windowSize=${this.windowSize}, strategy=${this.conflictStrategy}, timeout=${this.timeout}`);
     }
 
+    /**
+     * 查询文件是否正在被接收
+     * @param {string} fileId 
+     * @returns {boolean}
+     */
+    isReceiving(fileId) {
+        return this.recvSessions.has(fileId);
+    }
+
+    /**
+     * 查询文件是否正在被发送
+     * @param {string} fileId 
+     * @returns {boolean}
+     */
+    isSending(fileId) {
+        return this.sendSessions.has(fileId);
+    }
+
+    /**
+     * 查询文件是否处于活跃传输中（发送或接收）
+     * @param {string} fileId 
+     * @returns {boolean}
+     */
+    isTransferring(fileId) {
+        return this.recvSessions.has(fileId) || this.sendSessions.has(fileId);
+    }
+
     getInterestedTypes() { return Object.values(TYPE); }
 
     handleFrame(frame) {

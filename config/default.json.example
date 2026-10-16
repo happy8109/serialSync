@@ -30,7 +30,10 @@
     "network": "A-Network"
   },
   "relay": {
-    "peerUrl": "ws://192.168.1.100:3003/relay"
+    "peerUrl": "ws://192.168.1.100:3003/relay",
+    "peers": [
+      "ws://192.168.1.100:3003/relay"
+    ]
   },
   "transfer": {
     "chunkSize": 2048,
@@ -110,5 +113,25 @@
         }
       ]
     }
-  ]
+  ],
+  "tunnel": {
+    "enabled": true,
+    "allowRemoteTunnel": true,
+    "targetWhitelist": [
+      "127.0.0.1:22",
+      "127.0.0.1:23",
+      "127.0.0.1:3389"
+    ],
+    "clientTunnels": [
+      {
+        "id": "ssh_node_c",
+        "localPort": 2222,
+        "localHost": "127.0.0.1",
+        "targetNode": "C-Network/Node-C",
+        "targetHost": "127.0.0.1",
+        "targetPort": 22,
+        "description": "Cross-network SSH port forwarding to Node-C"
+      }
+    ]
+  }
 }

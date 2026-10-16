@@ -344,47 +344,69 @@ class ApiServer {
             }
         };
 
-        // 15a. 精确模式路由 (无子路径)
-        router.all('/proxy/:serviceId', async (req, res) => {
-            const { serviceId } = req.params;
+        // 15. 全网统一网关与反向代理路由 (支持本地服务与跨网 [目标网络]/[服务名] 寻址)
+        const _resolveProxyTarget = (tail) => {
+            const raw = (tail || '').replace(/^\/+/, '');
+            if (!raw) return null;
+            const parts = raw.split('/');
+
+            const localServices = this.controller.getLocalServices();
+            const remoteServices = this.controller.getRemoteServices();
+
+            // 1. 优先匹配本地服务 ID (如 "ollama_api" 或 "system_info")
+            if (localServices.some(s => s.id === parts[0])) {
+                return {
+                    serviceId: parts[0],
+                    subPath: parts.length > 1 ? ('/' + parts.slice(1).join('/')) : null
+                };
+            }
+
+            // 2. 匹配已注册的跨网服务全名 (如 "A网/ollama_api")
+            if (parts.length >= 2) {
+                const candidateGlobalId = `${parts[0]}/${parts[1]}`;
+                if (remoteServices.some(s => s.globalId === candidateGlobalId || s.id === candidateGlobalId)) {
+                    return {
+                        serviceId: candidateGlobalId,
+                        subPath: parts.length > 2 ? ('/' + parts.slice(2).join('/')) : null
+                    };
+                }
+            }
+
+            // 3. 匹配远程短服务名 (如 remoteServices 中的 "ollama_api")
+            if (remoteServices.some(s => s.id === parts[0])) {
+                return {
+                    serviceId: parts[0],
+                    subPath: parts.length > 1 ? ('/' + parts.slice(1).join('/')) : null
+                };
+            }
+
+            // 4. 跨网兜底：两段以上路径且第一段不是本地服务，视为 [网络名]/[服务名]
+            if (parts.length >= 2) {
+                return {
+                    serviceId: `${parts[0]}/${parts[1]}`,
+                    subPath: parts.length > 2 ? ('/' + parts.slice(2).join('/')) : null
+                };
+            }
+
+            // 5. 单段兜底
+            return {
+                serviceId: parts[0],
+                subPath: null
+            };
+        };
+
+        const _handleProxyRequest = async (req, res, tail) => {
+            const target = _resolveProxyTarget(tail);
+            if (!target || !target.serviceId) {
+                return res.status(404).json({ error: '无效的服务代理请求路径' });
+            }
+
+            const { serviceId, subPath } = target;
 
             // 拦截内网发出的健康探测请求
             if (req.headers['x-health-probe']) {
                 const isLocal = this.controller.getLocalServices().some(s => s.id === serviceId);
-                const isRemote = this.controller.getRemoteServices().some(s => s.id === serviceId);
-                if (isLocal || isRemote) {
-                    return res.json({ status: 'ok', serviceId, available: true });
-                } else {
-                    return res.status(503).json({ error: 'Service Unavailable', serviceId, available: false });
-                }
-            }
-
-            // 智能提取参数
-            let params = {};
-            if (Object.keys(req.query).length > 0) {
-                params = { ...req.query };
-            }
-            if (req.body && Object.keys(req.body).length > 0) {
-                params = { ...params, ...req.body };
-            }
-
-            try {
-                const result = await this.controller.pullService(serviceId, params);
-                _transparentResponse(res, result);
-            } catch (err) {
-                res.status(502).send({ error: err.message });
-            }
-        });
-
-        // 15b. 网关模式路由 (带子路径): /api/proxy/ollama/api/tags → path="/api/tags"
-        router.all('/proxy/:serviceId/*', async (req, res) => {
-            const { serviceId } = req.params;
-            const subPath = '/' + req.params[0];
-
-            // 健康探测拦截
-            if (req.headers['x-health-probe']) {
-                const isLocal = this.controller.getLocalServices().some(s => s.id === serviceId);
-                const isRemote = this.controller.getRemoteServices().some(s => s.id === serviceId);
+                const isRemote = this.controller.getRemoteServices().some(s => s.id === serviceId || s.globalId === serviceId);
                 if (isLocal || isRemote) {
                     return res.json({ status: 'ok', serviceId, available: true });
                 } else {
@@ -402,16 +424,58 @@ class ApiServer {
             }
 
             // 注入网关元数据
-            params.__gateway = {
-                path: subPath,
-                method: req.method
-            };
+            if (subPath || req.method !== 'GET') {
+                params.__gateway = {
+                    path: subPath || '',
+                    method: req.method
+                };
+            }
 
             try {
                 const result = await this.controller.pullService(serviceId, params);
                 _transparentResponse(res, result);
             } catch (err) {
                 res.status(502).send({ error: err.message });
+            }
+        };
+
+        // 15a. 精确模式及单级路由
+        router.all('/proxy/:serviceId', (req, res) => {
+            _handleProxyRequest(req, res, req.params.serviceId);
+        });
+
+        // 15b. 多级路径路由 (网关模式、跨网路由)
+        router.all('/proxy/:serviceId/*', (req, res) => {
+            const tail = req.params.serviceId + '/' + req.params[0];
+            _handleProxyRequest(req, res, tail);
+        });
+
+        // 16. TCP 端口转发隧道管理 API
+        router.get('/tunnel/status', (req, res) => {
+            try {
+                res.json(this.controller.getTunnelStatus());
+            } catch (err) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        router.post('/tunnel/start', (req, res) => {
+            const config = req.body;
+            try {
+                const ok = this.controller.startTunnel(config);
+                res.json({ success: ok });
+            } catch (err) {
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        router.post('/tunnel/stop', (req, res) => {
+            const { id } = req.body;
+            try {
+                this.controller.stopTunnel(id);
+                res.json({ success: true });
+            } catch (err) {
+                res.status(500).json({ error: err.message });
             }
         });
 

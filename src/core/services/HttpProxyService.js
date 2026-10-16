@@ -34,8 +34,12 @@ class HttpProxyService extends EventEmitter {
         // Pending Requests
         this.pendingRequests = new Map();
 
-        // Scheduler
+        // Scheduler & RouteEngine
         this.scheduler = null;
+        this.routeEngine = null;
+
+        // Node Identity
+        this.identity = { nodeName: '', network: '' };
 
         // Config Path for persistence
         this.configPath = path.join(process.cwd(), 'config', 'default.json');
@@ -53,6 +57,16 @@ class HttpProxyService extends EventEmitter {
 
     setScheduler(scheduler) {
         this.scheduler = scheduler;
+    }
+
+    setRouteEngine(routeEngine) {
+        this.routeEngine = routeEngine;
+    }
+
+    setIdentity(identity) {
+        if (!identity) return;
+        if (identity.nodeName) this.identity.nodeName = identity.nodeName;
+        if (identity.network !== undefined) this.identity.network = identity.network;
     }
 
     setAutoDiscovery(enabled) {
@@ -223,25 +237,67 @@ class HttpProxyService extends EventEmitter {
     }
 
     // =========================================================================
-    // Client Side: Invoke Remote Service
+    // Client Side: Invoke Remote or Local Service
     // =========================================================================
 
     /**
-     * Call a remote service
+     * Call a service (Local direct execution or remote multi-network routing)
      */
     async pullService(serviceId, params = {}, timeout = 30000) {
+        // 1. 如果请求的是本地服务，直接本地执行（零网络开销）
+        if (this.localServices.has(serviceId)) {
+            return await this._callLocalService(serviceId, params);
+        }
+
+        // 2. 解析目标网络与真实服务名称
+        let targetDst = '*';
+        let actualServiceId = serviceId;
+
+        if (serviceId.includes('/')) {
+            const parts = serviceId.split('/');
+            const targetNet = parts[0];
+            actualServiceId = parts.slice(1).join('/');
+
+            // 查询已知远程服务条目
+            const remote = this.remoteServices.get(serviceId);
+            if (remote && remote.targetNode) {
+                targetDst = remote.targetNode;
+            } else {
+                targetDst = `${targetNet}/*`;
+            }
+        } else if (this.remoteServices.has(serviceId)) {
+            const remote = this.remoteServices.get(serviceId);
+            if (remote && remote.targetNode) {
+                targetDst = remote.targetNode;
+            } else if (remote && remote.network) {
+                targetDst = `${remote.network}/*`;
+            }
+        }
+
         const requestId = this._generateRequestId();
         const request = {
             id: requestId,
-            service: serviceId,
+            service: actualServiceId,
+            caller: this.routeEngine ? this.routeEngine.localAddress : '',
             params
         };
 
         const payload = Buffer.from(JSON.stringify(request));
 
-        // P1 Priority
-        this.scheduler.enqueue(PT.CALL, 0, payload, 1);
-        this.logger.info(`[PULL] Requesting ${serviceId} (${requestId})`);
+        if (this.routeEngine) {
+            this.routeEngine.send({
+                type: PT.CALL,
+                dst: targetDst,
+                payload,
+                priority: 1
+            });
+            this.logger.info(`[PULL] Requesting ${serviceId} -> dst=${targetDst} (${requestId})`);
+        } else if (this.scheduler) {
+            this.scheduler.enqueue(PT.CALL, 0, payload, 1);
+            this.logger.info(`[PULL] Requesting ${serviceId} via Serial (${requestId})`);
+        } else {
+            throw new Error('No transport available to call service');
+        }
 
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
@@ -256,6 +312,60 @@ class HttpProxyService extends EventEmitter {
                 chunks: [], // For reassembly
                 totalChunks: 0
             });
+        });
+    }
+
+    /**
+     * 直接在本地执行本地注册的 API 服务
+     */
+    async _callLocalService(serviceId, params = {}) {
+        if (!this.localServices.has(serviceId)) {
+            throw new Error(`Local service not found: ${serviceId}`);
+        }
+        const svc = this.localServices.get(serviceId);
+        if (!svc.enabled) {
+            throw new Error(`Local service disabled: ${serviceId}`);
+        }
+
+        let endpoint = svc.endpoint;
+        let method = svc.method;
+        let targetHeaders = { ...svc.headers };
+        let reqBody = null;
+
+        if (params.__gateway) {
+            if (svc.mode === 'gateway') {
+                const gatewayMeta = params.__gateway;
+                method = gatewayMeta.method || 'GET';
+                if (gatewayMeta.path) {
+                    const baseUrl = endpoint.replace(/\/+$/, '');
+                    const subPath = gatewayMeta.path.startsWith('/') ? gatewayMeta.path : `/${gatewayMeta.path}`;
+                    endpoint = `${baseUrl}${subPath}`;
+                }
+            }
+            delete params.__gateway;
+        }
+
+        if (params.__headers) {
+            const inboundHeaders = params.__headers;
+            const skipHeaders = ['host', 'connection', 'content-length'];
+            for (const [k, v] of Object.entries(inboundHeaders)) {
+                if (!skipHeaders.includes(k.toLowerCase())) {
+                    targetHeaders[k] = v;
+                }
+            }
+            delete params.__headers;
+        }
+
+        if (params.__body !== undefined) {
+            reqBody = params.__body;
+            delete params.__body;
+        }
+
+        const callParams = reqBody !== null ? reqBody : params;
+        return await this.callLocalHttp(endpoint, callParams, {
+            method,
+            headers: targetHeaders,
+            timeout: svc.timeout
         });
     }
 
@@ -344,16 +454,17 @@ class HttpProxyService extends EventEmitter {
             request = JSON.parse(frame.body.toString());
         } catch (e) { return; }
 
-        const { id, service, params } = request;
+        const { id, service, params, caller } = request;
+        const targetCaller = caller || (frame.route ? frame.route.src : '*');
 
         // 1. Strict Whitelist Check
         if (!this.localServices.has(service)) {
-            return this._sendResult(id, 500, null, `Service not found: ${service}`);
+            return this._sendResult(id, 500, null, `Service not found: ${service}`, targetCaller);
         }
 
         const svc = this.localServices.get(service);
         if (!svc.enabled) {
-            return this._sendResult(id, 500, null, `Service disabled: ${service}`);
+            return this._sendResult(id, 500, null, `Service disabled: ${service}`, targetCaller);
         }
 
         // Meta Extraction
@@ -406,10 +517,10 @@ class HttpProxyService extends EventEmitter {
             });
 
             // 3. Send Result (Segmented if needed)
-            this._sendResult(id, 200, result);
+            this._sendResult(id, 200, result, null, targetCaller);
 
         } catch (err) {
-            this._sendResult(id, 500, null, err.message);
+            this._sendResult(id, 500, null, err.message, targetCaller);
         }
     }
 
@@ -457,37 +568,78 @@ class HttpProxyService extends EventEmitter {
         });
     }
 
-    _sendResult(requestId, status, data, error) {
+    _sendResult(requestId, status, data, error, caller = null) {
         // threshold 4KB
         const CHUNK_SIZE = 4096;
 
-        if (error || !data || data.length <= CHUNK_SIZE) {
-            // Send single packet
-            const payload = JSON.stringify({ id: requestId, status, data, error });
-            this.scheduler.enqueue(PT.RESULT, 0, Buffer.from(payload), 1);
-        } else {
-            // Segmented
-            const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
-
-            // 1. Header
-            const header = JSON.stringify({
-                id: requestId,
-                status,
-                chunked: true,
-                total: totalChunks
-            });
-            this.scheduler.enqueue(PT.RESULT, 0, Buffer.from(header), 1);
-
-            // 2. Chunks
-            for (let i = 0; i < totalChunks; i++) {
-                const chunkData = data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
-                const chunkPacket = JSON.stringify({
-                    id: requestId,
-                    seq: i,
-                    total: totalChunks,
-                    data: chunkData
+        if (this.routeEngine && caller) {
+            if (error || !data || data.length <= CHUNK_SIZE) {
+                const payload = Buffer.from(JSON.stringify({ id: requestId, status, data, error }));
+                this.routeEngine.send({
+                    type: PT.RESULT,
+                    dst: caller,
+                    payload,
+                    priority: 1
                 });
-                this.scheduler.enqueue(PT.CHUNK, 0, Buffer.from(chunkPacket), 1);
+            } else {
+                const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
+                const header = Buffer.from(JSON.stringify({
+                    id: requestId,
+                    status,
+                    chunked: true,
+                    total: totalChunks
+                }));
+                this.routeEngine.send({
+                    type: PT.RESULT,
+                    dst: caller,
+                    payload: header,
+                    priority: 1
+                });
+
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunkData = data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                    const chunkPacket = Buffer.from(JSON.stringify({
+                        id: requestId,
+                        seq: i,
+                        total: totalChunks,
+                        data: chunkData
+                    }));
+                    this.routeEngine.send({
+                        type: PT.CHUNK,
+                        dst: caller,
+                        payload: chunkPacket,
+                        priority: 1
+                    });
+                }
+            }
+            return;
+        }
+
+        // 回退至调度器发送
+        if (this.scheduler) {
+            if (error || !data || data.length <= CHUNK_SIZE) {
+                const payload = JSON.stringify({ id: requestId, status, data, error });
+                this.scheduler.enqueue(PT.RESULT, 0, Buffer.from(payload), 1);
+            } else {
+                const totalChunks = Math.ceil(data.length / CHUNK_SIZE);
+                const header = JSON.stringify({
+                    id: requestId,
+                    status,
+                    chunked: true,
+                    total: totalChunks
+                });
+                this.scheduler.enqueue(PT.RESULT, 0, Buffer.from(header), 1);
+
+                for (let i = 0; i < totalChunks; i++) {
+                    const chunkData = data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE);
+                    const chunkPacket = JSON.stringify({
+                        id: requestId,
+                        seq: i,
+                        total: totalChunks,
+                        data: chunkData
+                    });
+                    this.scheduler.enqueue(PT.CHUNK, 0, Buffer.from(chunkPacket), 1);
+                }
             }
         }
     }
@@ -501,10 +653,21 @@ class HttpProxyService extends EventEmitter {
         this._checkLocalServices();
 
         const id = this._generateRequestId();
-        const payload = JSON.stringify({ id, filter });
+        const network = (this.identity && this.identity.network) || '';
+        const caller = this.routeEngine ? this.routeEngine.localAddress : '';
+        const payload = JSON.stringify({ id, filter, caller, network });
 
         try {
-            this.scheduler.enqueue(PT.QUERY, 0, Buffer.from(payload), 1);
+            if (this.routeEngine) {
+                this.routeEngine.send({
+                    type: PT.QUERY,
+                    dst: '*',
+                    payload: Buffer.from(payload),
+                    priority: 1
+                });
+            } else if (this.scheduler) {
+                this.scheduler.enqueue(PT.QUERY, 0, Buffer.from(payload), 1);
+            }
 
             return new Promise((resolve, reject) => {
                 const timer = setTimeout(() => {
@@ -515,7 +678,7 @@ class HttpProxyService extends EventEmitter {
                 this.pendingRequests.set(id, { resolve, reject, timer });
             });
         } catch (err) {
-            this.logger.warn('Failed to send service query (Serial not connected?)');
+            this.logger.warn('Failed to send service query');
             return Promise.resolve([]); // Return empty list gracefully
         }
     }
@@ -524,9 +687,14 @@ class HttpProxyService extends EventEmitter {
         let query;
         try { query = JSON.parse(frame.body.toString()); } catch (e) { return; }
 
-        const { id, filter } = query;
+        const { id, filter, caller } = query;
+        const targetCaller = caller || (frame.route ? frame.route.src : '*');
+        const network = (this.identity && this.identity.network) || '';
+        const nodeName = (this.identity && this.identity.nodeName) || '';
+
         let services = Array.from(this.localServices.values()).map(s => ({
             id: s.id,
+            globalId: network ? `${network}/${s.id}` : s.id,
             name: s.name,
             description: s.description,
             version: s.version,
@@ -534,32 +702,62 @@ class HttpProxyService extends EventEmitter {
             method: s.method,
             enabled: s.enabled,
             params: s.params,
-            status: s.status
-        })); // Exclude endpoint!
+            status: s.status,
+            network,
+            nodeName
+        }));
 
         if (filter && filter.enabled) {
             services = services.filter(s => s.enabled);
         }
 
-        const resp = JSON.stringify({ id, services });
-        this.scheduler.enqueue(PT.LIST, 0, Buffer.from(resp), 1);
+        const resp = JSON.stringify({ id, services, network, nodeName });
+
+        if (this.routeEngine && targetCaller) {
+            this.routeEngine.send({
+                type: PT.LIST,
+                dst: targetCaller,
+                payload: Buffer.from(resp),
+                priority: 1
+            });
+        } else if (this.scheduler) {
+            this.scheduler.enqueue(PT.LIST, 0, Buffer.from(resp), 1);
+        }
     }
 
     handleServiceList(frame) {
         let resp;
         try { resp = JSON.parse(frame.body.toString()); } catch (e) { return; }
 
-        const { id, services } = resp;
+        const { id, services, network, nodeName } = resp;
         const pending = this.pendingRequests.get(id);
 
-        // Cache them
-        this.remoteServices.clear();
-        services.forEach(s => this.remoteServices.set(s.id, s));
+        if (Array.isArray(services)) {
+            services.forEach(s => {
+                const net = s.network || network || '';
+                const node = s.nodeName || nodeName || '';
+                const globalId = s.globalId || (net ? `${net}/${s.id}` : s.id);
+                const targetNode = net && node ? `${net}/${node}` : (frame.route ? frame.route.src : null);
+
+                const entry = {
+                    ...s,
+                    globalId,
+                    network: net,
+                    nodeName: node,
+                    targetNode
+                };
+
+                this.remoteServices.set(globalId, entry);
+                if (!this.remoteServices.has(s.id)) {
+                    this.remoteServices.set(s.id, entry);
+                }
+            });
+        }
 
         if (pending) {
             clearTimeout(pending.timer);
             this.pendingRequests.delete(id);
-            pending.resolve(services);
+            pending.resolve(this.getRemoteServices());
         }
     }
 
@@ -585,7 +783,16 @@ class HttpProxyService extends EventEmitter {
     }
 
     getRemoteServices() {
-        return Array.from(this.remoteServices.values());
+        const seen = new Set();
+        const result = [];
+        for (const [key, s] of this.remoteServices) {
+            const uniqueKey = s.globalId || s.id;
+            if (!seen.has(uniqueKey)) {
+                seen.add(uniqueKey);
+                result.push(s);
+            }
+        }
+        return result;
     }
 
     clearRemoteServices() {

@@ -5,7 +5,7 @@ import { cn } from '../lib/utils';
 import SettingsModal from '../features/settings/SettingsModal';
 
 const MainLayout = ({ children }) => {
-    const { isConnected, linkReady, port, baudRate, stats } = useAppStore();
+    const { isConnected, linkReady, port, baudRate, stats, config } = useAppStore();
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
     // 三态指示器: 绿(linkReady) / 橙(串口连接但对端离线) / 红(串口断开)
@@ -29,7 +29,15 @@ const MainLayout = ({ children }) => {
                     <div className="w-8 h-8 bg-primary rounded-lg flex items-center justify-center text-primary-foreground shadow-sm">
                         <Cable size={20} />
                     </div>
-                    <h1 className="font-bold text-lg tracking-tight">SerialSync <span className="text-xs font-normal text-muted-foreground ml-1">v{__APP_VERSION__}</span></h1>
+                    <div className="flex items-center gap-2">
+                        <h1 className="font-bold text-lg tracking-tight">SerialSync</h1>
+                        <span className="text-xs font-normal text-muted-foreground">v{__APP_VERSION__}</span>
+                        {config?.identity?.nodeName && (
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary border border-primary/20">
+                                {config.identity.network ? `${config.identity.network} / ` : ''}{config.identity.nodeName}
+                            </span>
+                        )}
+                    </div>
                 </div>
 
                 <div className="flex items-center gap-4">
