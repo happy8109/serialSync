@@ -5,14 +5,19 @@
 ---
 
 ## 📌 当前进行中任务基准 (Active Context)
-- **当前核心主线**：服务发现对齐、远程微服务全限定名寻址与 8 位字母数字不可变物理真 ID (nodeId) 架构落地
-- **当前版本基准**：`3.0.5`
+- **当前核心主线**：Windows 7 兼容性修复（`os.hostname()` ENOSYS 安全回退）与服务发现/路由体系维护
+- **当前版本基准**：`3.0.6`
 - **当前分支状态**：`main`
 
 ---
 
 ## 🎯 核心业务与功能最新里程碑 (Core Feature Baseline)
 > **说明**：记录最近一次核心业务功能演进的物理提交与资产清单，供新会话启动时 100% 无损还原业务上下文。辅助性的文档/工作流变更不得覆写此处内容。
+
+### [修复：Windows 7 + Node.js 18 下 `os.hostname()` 抛出 `ENOSYS` 启动崩溃 (v3.0.6)]
+- **修复概述**：
+  - 新增 [osUtils.js](file:///e:/nodejs/serialSync/src/utils/osUtils.js)，提供 `getSafeHostname()` 安全封装：优先调用 `os.hostname()`，捕获异常后回退至 `process.env.COMPUTERNAME || process.env.HOSTNAME || 'localhost'`。
+  - 将 [AppController.js](file:///e:/nodejs/serialSync/src/core/interface/AppController.js)、[RouteEngine.js](file:///e:/nodejs/serialSync/src/core/router/RouteEngine.js)、[MessageService.js](file:///e:/nodejs/serialSync/src/core/services/MessageService.js)、[RelayService.js](file:///e:/nodejs/serialSync/src/core/services/RelayService.js)、[TunnelService.js](file:///e:/nodejs/serialSync/src/core/services/TunnelService.js) 中全部 `os.hostname()` 直接调用统一替换为 `getSafeHostname()`。
 
 ### [里程碑：服务发现实时对齐、微服务全限定名寻址与不可变物理真 ID 架构落地]
 - **重构成果概述**：
@@ -52,6 +57,7 @@
 ## 📜 历史交接归档流水 (Archive History)
 | 日期 | 版本 | 类型 | 关键成果概述 |
 | :--- | :--- | :--- | :--- |
+| 2026-11-18 | 3.0.6 | fix | 修复 Windows 7 + Node.js 18 下 os.hostname() 抛出 ENOSYS 启动崩溃，新增 getSafeHostname() 安全回退 |
 | 2026-10-16 | 3.0.5 | feature | 实现服务发现自动清理对齐、微服务全限定名寻址与 8 位字母数字不可变 nodeId 架构全栈贯通 |
 | 2026-10-16 | 3.0.4 | refactor | 完成多网单串口路由、LAN多对端总线、跨网API网关、TCP端口转发隧道重构与WebUI设置适配 |
 | 2026-10-11 | 1.0.0.0 | init | 初始化工程脚手架与通用协同工作流 |

@@ -6,7 +6,7 @@
 
 const EventEmitter = require('events');
 const config = require('config');
-const os = require('os');
+const { getSafeHostname } = require('../../utils/osUtils');
 
 class MessageService extends EventEmitter {
     constructor() {
@@ -17,7 +17,7 @@ class MessageService extends EventEmitter {
 
         // 节点身份信息（由 AppController 注入）
         this.identity = {
-            nodeName: os.hostname(),
+            nodeName: getSafeHostname(),
             network: '',
             nodeId: ''
         };

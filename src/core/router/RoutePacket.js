@@ -70,7 +70,8 @@ class RoutePacket {
     isNetworkBroadcast(network) {
         if (!this.dst.includes('/*')) return false;
         const targetNet = this.dst.split('/')[0];
-        return targetNet === '*' || targetNet === network;
+        const normalizedNet = network || 'default';
+        return targetNet === '*' || targetNet === normalizedNet;
     }
 
     /**
@@ -84,19 +85,20 @@ class RoutePacket {
         if (this.isBroadcast()) return true;
 
         const [dstNet, dstNode] = this.dst.split('/');
+        const normalizedNet = localNetwork || 'default';
 
-        // 2. 匹配本机底层真 ID (8位纯字母)
+        // 2. 匹配本机底层真 ID (8位纯字母数字)
         if (localNodeId && (this.dst === localNodeId || dstNode === localNodeId || dstNet === localNodeId)) {
             return true;
         }
 
         // 3. 网络内广播 (如 "A网/*")
-        if (dstNet === localNetwork && (dstNode === '*' || !dstNode)) {
+        if (dstNet === normalizedNet && (dstNode === '*' || !dstNode)) {
             return true;
         }
 
         // 4. 单播精确匹配 (如 "A网/A1" 或 "A网/nodeId")
-        if (dstNet === localNetwork && (dstNode === localNodeName || (localNodeId && dstNode === localNodeId))) {
+        if (dstNet === normalizedNet && (dstNode === localNodeName || (localNodeId && dstNode === localNodeId))) {
             return true;
         }
 

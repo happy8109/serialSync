@@ -14,8 +14,8 @@
 
 const net = require('net');
 const EventEmitter = require('events');
-const os = require('os');
 const { logger } = require('../../utils/logger');
+const { getSafeHostname } = require('../../utils/osUtils');
 const tunnelLogger = logger.create('Tunnel');
 
 const PT = {
@@ -40,7 +40,7 @@ class TunnelService extends EventEmitter {
 
         // 本节点身份
         this.identity = {
-            nodeName: os.hostname(),
+            nodeName: getSafeHostname(),
             network: '',
             nodeId: ''
         };
@@ -183,7 +183,7 @@ class TunnelService extends EventEmitter {
         tunnelLogger.info(`[隧道] 停止本地隧道监听: ${id}`);
         try {
             entry.server.close();
-        } catch (e) {}
+        } catch (e) { }
         this.servers.delete(id);
 
         // 销毁属于该隧道的活跃客户端连接
@@ -482,7 +482,7 @@ class TunnelService extends EventEmitter {
         this.clientSessions.delete(sessionId);
 
         if (session.clientSocket) {
-            try { session.clientSocket.destroy(); } catch (e) {}
+            try { session.clientSocket.destroy(); } catch (e) { }
         }
 
         if (notifyRemote && session.targetNode) {
@@ -502,7 +502,7 @@ class TunnelService extends EventEmitter {
         this.targetSessions.delete(sessionId);
 
         if (session.targetSocket) {
-            try { session.targetSocket.destroy(); } catch (e) {}
+            try { session.targetSocket.destroy(); } catch (e) { }
         }
 
         if (notifyRemote && session.clientNode) {

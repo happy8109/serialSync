@@ -19,6 +19,7 @@ const path = require('path');
 const os = require('os');
 const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
+const { getSafeHostname } = require('../../utils/osUtils');
 const relayLogger = logger.create('Relay');
 
 // 帧类型常量
@@ -46,7 +47,7 @@ class RelayService extends EventEmitter {
 
         // 节点身份
         this.identity = {
-            nodeName: os.hostname(),
+            nodeName: getSafeHostname(),
             network: '',
             nodeId: ''
         };
@@ -167,7 +168,7 @@ class RelayService extends EventEmitter {
                 this.peerManagers.delete(url);
                 for (const [key, peer] of this.peers) {
                     if (peer.url === url) {
-                        try { peer.ws.close(); } catch (e) {}
+                        try { peer.ws.close(); } catch (e) { }
                     }
                 }
             }

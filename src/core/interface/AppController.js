@@ -4,7 +4,6 @@
  */
 
 const EventEmitter = require('events');
-const os = require('os');
 const SerialBridge = require('../transport/SerialBridge');
 const PacketScheduler = require('../transport/PacketScheduler');
 const ServiceManager = require('../services/ServiceManager');
@@ -18,6 +17,7 @@ const TunnelService = require('../services/TunnelService');
 const RouteEngine = require('../router/RouteEngine');
 const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
+const { getSafeHostname } = require('../../utils/osUtils');
 const appLogger = logger.create('App');
 
 /**
@@ -124,7 +124,7 @@ class AppController extends EventEmitter {
         // 初始化身份和中继配置
         const defaultIdentity = {
             nodeId,
-            nodeName: config.has('identity.nodeName') ? config.get('identity.nodeName') : os.hostname(),
+            nodeName: config.has('identity.nodeName') ? config.get('identity.nodeName') : getSafeHostname(),
             network: config.has('identity.network') ? config.get('identity.network') : ''
         };
         this.messageService.setIdentity(defaultIdentity);

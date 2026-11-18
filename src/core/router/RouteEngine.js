@@ -10,9 +10,9 @@
  */
 
 const EventEmitter = require('events');
-const os = require('os');
 const RoutePacket = require('./RoutePacket');
 const { logger } = require('../../utils/logger');
+const { getSafeHostname } = require('../../utils/osUtils');
 const routeLogger = logger.create('RouteEngine');
 
 class RouteEngine extends EventEmitter {
@@ -28,7 +28,7 @@ class RouteEngine extends EventEmitter {
         // 节点身份与地址
         this.identity = {
             nodeId: (options.identity && options.identity.nodeId) || '',
-            nodeName: (options.identity && options.identity.nodeName) || os.hostname(),
+            nodeName: (options.identity && options.identity.nodeName) || getSafeHostname(),
             network: (options.identity && options.identity.network) || ''
         };
 

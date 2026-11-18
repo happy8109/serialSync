@@ -493,7 +493,7 @@ class HttpProxyService extends EventEmitter {
             if (svc.mode === 'gateway') {
                 const gatewayMeta = params.__gateway;
                 method = gatewayMeta.method || 'GET';
-                
+
                 if (gatewayMeta.path) {
                     const baseUrl = endpoint.replace(/\/+$/, '');
                     const subPath = gatewayMeta.path.startsWith('/') ? gatewayMeta.path : `/${gatewayMeta.path}`;
@@ -524,7 +524,7 @@ class HttpProxyService extends EventEmitter {
         try {
             // For gateway mode with explicit body, we pass it down
             const callParams = reqBody !== null ? reqBody : params;
-            
+
             const result = await this.callLocalHttp(endpoint, callParams, {
                 method: method,
                 headers: targetHeaders,
@@ -669,8 +669,11 @@ class HttpProxyService extends EventEmitter {
 
         const id = this._generateRequestId();
         const network = (this.identity && this.identity.network) || '';
-        const caller = this.routeEngine ? this.routeEngine.localAddress : '';
-        const payload = JSON.stringify({ id, filter, caller, network });
+        const nodeId = (this.identity && this.identity.nodeId) || '';
+        const caller = nodeId
+            ? `${network || 'default'}/${nodeId}`
+            : (this.routeEngine ? this.routeEngine.localAddress : '');
+        const payload = JSON.stringify({ id, filter, caller, network, nodeId });
 
         try {
             if (this.routeEngine) {
@@ -702,8 +705,10 @@ class HttpProxyService extends EventEmitter {
         let query;
         try { query = JSON.parse(frame.body.toString()); } catch (e) { return; }
 
-        const { id, filter, caller } = query;
-        const targetCaller = caller || (frame.route ? frame.route.src : '*');
+        const { id, filter, caller, network: callerNet, nodeId: callerNodeId } = query;
+        const targetCaller = callerNodeId
+            ? `${callerNet || 'default'}/${callerNodeId}`
+            : (caller || (frame.route ? frame.route.src : '*'));
         const network = (this.identity && this.identity.network) || '';
         const nodeName = (this.identity && this.identity.nodeName) || '';
         const nodeId = (this.identity && this.identity.nodeId) || '';
