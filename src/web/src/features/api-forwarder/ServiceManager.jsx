@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Globe, RefreshCw, Server, Play, Activity, Database, ArrowRight, Plus, Copy, Check, Trash2, Edit2 } from 'lucide-react';
+import { Globe, RefreshCw, Server, Play, Activity, Database, ArrowRight, Plus, Copy, Check, Trash2, Edit2, Link2, Square } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 import useAppStore from '../../store/appStore';
@@ -30,19 +30,69 @@ export default function ServiceManager() {
     // Copy Feedback State
     const [copiedId, setCopiedId] = useState(null);
 
+    // Virtual Ports State
+    const [virtualPorts, setVirtualPorts] = useState([]);
+    const [bindModal, setBindModal] = useState(null); // { serviceId, port }
+
     useEffect(() => {
         fetchLocalServices();
         fetchRemoteServices(); // Load cached
+        fetchVirtualPorts();
         handleQueryRemote(); // Auto-trigger discovery
 
         // 自动轮询刷新状态
         const timer = setInterval(() => {
             fetchLocalServices();
             fetchRemoteServices();
+            fetchVirtualPorts();
         }, 5000);
 
         return () => clearInterval(timer);
     }, []);
+
+    const fetchVirtualPorts = async () => {
+        try {
+            const res = await fetch('/api/services/virtual-ports');
+            const data = await res.json();
+            if (data.success) setVirtualPorts(data.data || []);
+        } catch (e) {
+            console.error(e);
+        }
+    };
+
+    const handleStartVirtualPort = async () => {
+        if (!bindModal || !bindModal.port) return;
+        try {
+            const res = await fetch('/api/services/virtual-ports/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port: Number(bindModal.port), serviceId: bindModal.serviceId })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setVirtualPorts(data.data || []);
+                setBindModal(null);
+            } else {
+                addLog({ timestamp: Date.now(), level: 'error', tag: 'API', message: data.error || '绑定端口失败' });
+            }
+        } catch (e) {
+            addLog({ timestamp: Date.now(), level: 'error', tag: 'API', message: e.message });
+        }
+    };
+
+    const handleStopVirtualPort = async (port) => {
+        try {
+            const res = await fetch('/api/services/virtual-ports/stop', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ port })
+            });
+            const data = await res.json();
+            if (data.success) setVirtualPorts(data.data || []);
+        } catch (e) {
+            console.error(e);
+        }
+    };
 
     const fetchLocalServices = async () => {
         try {
@@ -201,7 +251,7 @@ export default function ServiceManager() {
     const getProxyUrl = (service) => {
         const idToUse = service.globalId || service.id;
         const base = `${window.location.protocol}//${window.location.hostname}:${window.location.port}/api/proxy/${idToUse}`;
-        return service.mode === 'gateway' ? `${base}/` : base;
+        return (service.mode === 'gateway' || service.mode === 'transparent') ? `${base}/` : base;
     };
 
     return (
@@ -284,7 +334,9 @@ export default function ServiceManager() {
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <div className="flex gap-1">
-                                            {service.mode === 'gateway' ? (
+                                            {service.mode === 'transparent' ? (
+                                                <div className="text-[10px] bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded text-blue-500 font-medium">透明反代</div>
+                                            ) : service.mode === 'gateway' ? (
                                                 <div className="text-[10px] bg-orange-500/10 border border-orange-500/20 px-1.5 py-0.5 rounded text-orange-500 font-medium">Gateway</div>
                                             ) : (
                                                 <div className="text-[10px] bg-muted border border-border/50 px-1.5 py-0.5 rounded text-muted-foreground font-medium">{service.method}</div>
@@ -348,18 +400,29 @@ export default function ServiceManager() {
                                                     <span className="w-2 h-2 rounded-full bg-muted-foreground/50 border border-muted-foreground" title="远程服务已禁用"></span>
                                                 )}
                                                 {service.name || service.id}
+                                                {service.mode === 'transparent' && (
+                                                    <span className="ml-1 text-[10px] bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded-full text-blue-500 tracking-tighter">透明反代</span>
+                                                )}
                                                 {service.mode === 'gateway' && (
                                                     <span className="ml-1 text-[10px] bg-orange-500/10 border border-orange-500/20 px-1.5 py-0.5 rounded-full text-orange-500 uppercase tracking-tighter">Gateway</span>
                                                 )}
                                                 {(service.nodeName || service.network) && (
                                                     <span className="ml-1 text-[10px] bg-blue-500/10 border border-blue-500/20 px-1.5 py-0.5 rounded-full text-blue-500 font-mono">
-                                                        @{service.nodeName || ''}{service.network ? ` (${service.network})` : ''}
+                                                        @{service.nodeName || service.network}
                                                     </span>
                                                 )}
                                             </div>
                                             <div className="text-xs text-muted-foreground mt-0.5">{service.description || '暂无描述'}</div>
                                         </div>
-                                        <div className="flex gap-2">
+                                        <div className="flex gap-1.5">
+                                            <button
+                                                onClick={() => setBindModal({ serviceId: serviceCallId, port: '18080' })}
+                                                className="px-2 py-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-500 rounded-md transition-colors text-xs flex items-center gap-1"
+                                                title="绑定本地独立虚拟端口 (类似 Nginx proxy_pass)"
+                                            >
+                                                <Link2 size={13} />
+                                                绑定端口
+                                            </button>
                                             <button
                                                 onClick={() => handleCallService(serviceCallId)}
                                                 disabled={callingServiceId === serviceCallId}
@@ -373,6 +436,36 @@ export default function ServiceManager() {
                                             </button>
                                         </div>
                                     </div>
+
+                                    {/* Bound Virtual Ports */}
+                                    {virtualPorts.filter(vp => vp.serviceId === serviceCallId || vp.serviceId === service.id).map(vp => {
+                                        const vpUrl = `${window.location.protocol}//${window.location.hostname}:${vp.port}`;
+                                        return (
+                                            <div key={vp.port} className="bg-blue-500/5 rounded p-2 flex items-center justify-between gap-2 border border-blue-500/20">
+                                                <div className="text-[11px] font-mono text-blue-500 truncate select-all flex items-center gap-1.5">
+                                                    <span className={cn("w-1.5 h-1.5 rounded-full shrink-0", vp.active ? "bg-green-500" : "bg-red-500")} />
+                                                    <span>虚拟端口: {vpUrl}</span>
+                                                    {vp.error && <span className="text-red-500 text-[10px]">({vp.error})</span>}
+                                                </div>
+                                                <div className="flex items-center gap-1.5 shrink-0">
+                                                    <button
+                                                        onClick={() => copyToClipboard(vpUrl, `vp-${vp.port}`)}
+                                                        className="text-muted-foreground hover:text-foreground"
+                                                        title="复制虚拟端口地址"
+                                                    >
+                                                        {copiedId === `vp-${vp.port}` ? <Check size={13} className="text-green-500" /> : <Copy size={13} />}
+                                                    </button>
+                                                    <button
+                                                        onClick={() => handleStopVirtualPort(vp.port)}
+                                                        className="text-muted-foreground hover:text-red-500"
+                                                        title="停止并解绑端口"
+                                                    >
+                                                        <Square size={12} fill="currentColor" />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                        );
+                                    })}
 
                                     {/* Proxy URL Section - Gateway Mode */}
                                     <div className="bg-muted/30 rounded p-2 flex items-center justify-between gap-2 border border-border/30">
@@ -444,11 +537,12 @@ export default function ServiceManager() {
                                         value={newService.mode}
                                         onChange={e => setNewService({ ...newService, mode: e.target.value })}
                                     >
+                                        <option value="transparent">透明反代 (Transparent Proxy)</option>
                                         <option value="exact">精确路由 (Exact)</option>
-                                        <option value="gateway">网关透传 (Base URL)</option>
+                                        <option value="gateway">网关透传 (Legacy Gateway)</option>
                                     </select>
                                 </div>
-                                {newService.mode !== 'gateway' && (
+                                {newService.mode === 'exact' && (
                                     <div className="space-y-1">
                                         <label className="text-xs font-medium text-muted-foreground">请求方法</label>
                                         <select
@@ -514,6 +608,52 @@ export default function ServiceManager() {
                                 className="px-4 py-2 bg-primary text-primary-foreground rounded-md text-sm font-medium hover:bg-primary/90 transition-colors"
                             >
                                 关闭
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Bind Virtual Port Modal */}
+            {bindModal && (
+                <div className="absolute inset-0 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+                    <div className="bg-card border border-border shadow-lg rounded-xl w-full max-w-sm animate-in fade-in zoom-in-95 duration-200">
+                        <div className="p-4 border-b border-border flex justify-between items-center">
+                            <h3 className="font-semibold flex items-center gap-2 text-sm">
+                                <Link2 size={16} className="text-blue-500" />
+                                绑定本地虚拟端口
+                            </h3>
+                            <button onClick={() => setBindModal(null)} className="text-muted-foreground hover:text-foreground">✕</button>
+                        </div>
+                        <div className="p-4 space-y-3">
+                            <div className="text-xs text-muted-foreground">
+                                目标远程服务: <span className="font-mono text-foreground">{bindModal.serviceId}</span>
+                            </div>
+                            <div className="space-y-1">
+                                <label className="text-xs font-medium text-muted-foreground">本地监听端口 (1 - 65535)</label>
+                                <input
+                                    type="number"
+                                    min="1"
+                                    max="65535"
+                                    className="w-full bg-background border border-input rounded-md px-3 py-2 text-sm font-mono focus:outline-none focus:ring-1 focus:ring-primary"
+                                    value={bindModal.port}
+                                    onChange={e => setBindModal({ ...bindModal, port: e.target.value })}
+                                    placeholder="例如: 18080"
+                                />
+                            </div>
+                        </div>
+                        <div className="p-3 border-t border-border flex justify-end gap-2 bg-muted/20">
+                            <button
+                                onClick={() => setBindModal(null)}
+                                className="px-3 py-1.5 text-sm hover:bg-muted rounded-md transition-colors"
+                            >
+                                取消
+                            </button>
+                            <button
+                                onClick={handleStartVirtualPort}
+                                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded-md hover:bg-blue-700 transition-colors"
+                            >
+                                启动映射
                             </button>
                         </div>
                     </div>

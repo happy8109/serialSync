@@ -124,7 +124,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                 targetWhitelist: Array.isArray(tunnelVals.targetWhitelist) ? tunnelVals.targetWhitelist : ['127.0.0.1:22', '127.0.0.1:23', '127.0.0.1:3389'],
                 clientTunnels: Array.isArray(tunnelVals.clientTunnels) ? tunnelVals.clientTunnels : []
             });
-            
+
             setOriginalPorts({
                 apiPort: serverVals.port || 3000,
                 webPort: webVals.port || 5173
@@ -280,7 +280,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                     if (confirm('检测到您修改了系统服务端口配置（该级别设置需重启后台进程方可生效）。\n\n是否立即执行后台系统热重启？')) {
                         try {
                             await fetch('/api/system/restart', { method: 'POST' });
-                        } catch(e) {}
+                        } catch (e) { }
                         alert(`安全重启指令已发送！\n后台调度器正在重新孵化网络进程，请耐心等待数秒。\n\n⚠️ 如果您修改了 Web UI 端口，请稍后手动在浏览器地址栏输入新的端口：\nhttp://${window.location.hostname}:${systemConfig.webPort}`);
                     }
                 }
@@ -601,13 +601,17 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                         />
                                     </div>
                                     <div className="space-y-2">
-                                        <label className="text-sm font-medium">所属网络 (Network)</label>
+                                        <div className="flex items-center justify-between">
+                                            <label className="text-sm font-medium">网络域 (自动派生)</label>
+                                            <span className="text-[10px] text-muted-foreground">免配置防冲突</span>
+                                        </div>
                                         <input
                                             type="text"
-                                            value={identityConfig.network}
-                                            onChange={(e) => setIdentityConfig({ ...identityConfig, network: e.target.value })}
-                                            className="w-full px-3 py-2 rounded-md border border-input bg-background focus:outline-none focus:ring-2 focus:ring-primary text-sm"
-                                            placeholder="例如: A网 或 A-Network"
+                                            value={identityConfig.network || (identityConfig.nodeId ? `net-${identityConfig.nodeId}` : '--')}
+                                            readOnly
+                                            disabled
+                                            className="w-full px-3 py-2 rounded-md border border-input bg-muted/60 text-muted-foreground font-mono text-sm cursor-not-allowed select-all"
+                                            title="系统基于底层真 ID 自动派生，无需手动设置"
                                         />
                                     </div>
                                     <div className="space-y-2">

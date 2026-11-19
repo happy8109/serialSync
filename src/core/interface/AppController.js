@@ -121,11 +121,15 @@ class AppController extends EventEmitter {
             }
         }
 
-        // 初始化身份和中继配置
+        // 初始化身份和中继配置（若未配置网络名，则基于 nodeId 自动派生，避免人为错配）
+        let network = config.has('identity.network') ? config.get('identity.network') : '';
+        if (!network) {
+            network = `net-${nodeId}`;
+        }
         const defaultIdentity = {
             nodeId,
             nodeName: config.has('identity.nodeName') ? config.get('identity.nodeName') : getSafeHostname(),
-            network: config.has('identity.network') ? config.get('identity.network') : ''
+            network
         };
         this.messageService.setIdentity(defaultIdentity);
         this.messageService.setRouteEngine(this.routeEngine);
@@ -424,10 +428,15 @@ class AppController extends EventEmitter {
             }
             if (config.identity) {
                 const preservedNodeId = currentConfig.identity?.nodeId;
+                const preservedNetwork = currentConfig.identity?.network;
                 currentConfig.identity = { ...currentConfig.identity, ...config.identity };
                 // 确保不可变的 8 位真 ID 不会被前端意外抹除
                 if (preservedNodeId && (!currentConfig.identity.nodeId || !/^[a-z0-9]{8}$/.test(currentConfig.identity.nodeId))) {
                     currentConfig.identity.nodeId = preservedNodeId;
+                }
+                // 确保自动派生的网络域标识不会被空值覆写
+                if (!currentConfig.identity.network) {
+                    currentConfig.identity.network = preservedNetwork || (currentConfig.identity.nodeId ? `net-${currentConfig.identity.nodeId}` : '');
                 }
             }
             if (config.relay) {
@@ -720,6 +729,22 @@ class AppController extends EventEmitter {
 
     async pullService(serviceId, params) {
         return await this.httpProxyService.pullService(serviceId, params);
+    }
+
+    async pullTransparent(serviceId, reqInfo, timeout) {
+        return await this.httpProxyService.pullTransparent(serviceId, reqInfo, timeout);
+    }
+
+    startVirtualPort(options) {
+        return this.httpProxyService.startVirtualPort(options);
+    }
+
+    stopVirtualPort(port) {
+        this.httpProxyService.stopVirtualPort(port);
+    }
+
+    getVirtualPorts() {
+        return this.httpProxyService.getVirtualPorts();
     }
 
     async queryRemoteServices(filter) {

@@ -172,7 +172,7 @@ class ApiServer {
         router.get('/relay/file/:fileId', (req, res) => {
             const { fileId } = req.params;
             const fileInfo = this.controller.relayService.fileIndex.get(fileId);
-            
+
             if (!fileInfo || !fileInfo.local || !fileInfo.fullPath) {
                 return res.status(404).json({ error: '文件未就绪或未找到' });
             }
@@ -349,7 +349,7 @@ class ApiServer {
             }
         };
 
-        // 15. 全网统一网关与反向代理路由 (支持本地服务与跨网 [目标网络]/[服务名] 寻址)
+        // 15. 全网统一网关与反向代理路由 (支持本地服务与跨网 [网络]/[节点]/[服务名] 寻址)
         const _resolveProxyTarget = (tail) => {
             const raw = (tail || '').replace(/^\/+/, '');
             if (!raw) return null;
@@ -359,44 +359,71 @@ class ApiServer {
             const remoteServices = this.controller.getRemoteServices();
 
             // 1. 优先匹配本地服务 ID (如 "ollama_api" 或 "system_info")
-            if (localServices.some(s => s.id === parts[0])) {
+            const localMatch = localServices.find(s => s.id === parts[0]);
+            if (localMatch) {
                 return {
                     serviceId: parts[0],
-                    subPath: parts.length > 1 ? ('/' + parts.slice(1).join('/')) : null
+                    subPath: parts.length > 1 ? ('/' + parts.slice(1).join('/')) : '/',
+                    mode: localMatch.mode
                 };
             }
 
-            // 2. 匹配已注册的跨网服务全名 (如 "A网/ollama_api")
-            if (parts.length >= 2) {
-                const candidateGlobalId = `${parts[0]}/${parts[1]}`;
-                if (remoteServices.some(s => s.globalId === candidateGlobalId || s.id === candidateGlobalId)) {
+            // 2. 优先匹配三段式跨网服务全限定名 (如 "A网/A1s/ollama_api")
+            if (parts.length >= 3) {
+                const fqdn = `${parts[0]}/${parts[1]}/${parts[2]}`;
+                const remoteFqdn = remoteServices.find(s => s.globalId === fqdn);
+                if (remoteFqdn) {
                     return {
-                        serviceId: candidateGlobalId,
-                        subPath: parts.length > 2 ? ('/' + parts.slice(2).join('/')) : null
+                        serviceId: fqdn,
+                        subPath: parts.length > 3 ? ('/' + parts.slice(3).join('/')) : '/',
+                        mode: remoteFqdn.mode
                     };
                 }
             }
 
-            // 3. 匹配远程短服务名 (如 remoteServices 中的 "ollama_api")
-            if (remoteServices.some(s => s.id === parts[0])) {
+            // 3. 匹配两段式跨网服务名 (如 "A网/ollama_api")
+            if (parts.length >= 2) {
+                const candidateGlobalId = `${parts[0]}/${parts[1]}`;
+                const remote2 = remoteServices.find(s => s.globalId === candidateGlobalId || s.id === candidateGlobalId);
+                if (remote2) {
+                    return {
+                        serviceId: remote2.globalId || candidateGlobalId,
+                        subPath: parts.length > 2 ? ('/' + parts.slice(2).join('/')) : '/',
+                        mode: remote2.mode
+                    };
+                }
+            }
+
+            // 4. 匹配远程短服务名 (如 remoteServices 中的 "ollama_api")
+            const remoteShort = remoteServices.find(s => s.id === parts[0]);
+            if (remoteShort) {
                 return {
-                    serviceId: parts[0],
-                    subPath: parts.length > 1 ? ('/' + parts.slice(1).join('/')) : null
+                    serviceId: remoteShort.globalId || parts[0],
+                    subPath: parts.length > 1 ? ('/' + parts.slice(1).join('/')) : '/',
+                    mode: remoteShort.mode
                 };
             }
 
-            // 4. 跨网兜底：两段以上路径且第一段不是本地服务，视为 [网络名]/[服务名]
-            if (parts.length >= 2) {
+            // 5. 跨网兜底：三段以上视为 [网络]/[节点]/[服务名]，两段视为 [网络]/[服务名]
+            if (parts.length >= 3) {
+                return {
+                    serviceId: `${parts[0]}/${parts[1]}/${parts[2]}`,
+                    subPath: parts.length > 3 ? ('/' + parts.slice(3).join('/')) : '/',
+                    mode: 'transparent'
+                };
+            }
+            if (parts.length === 2) {
                 return {
                     serviceId: `${parts[0]}/${parts[1]}`,
-                    subPath: parts.length > 2 ? ('/' + parts.slice(2).join('/')) : null
+                    subPath: '/',
+                    mode: 'transparent'
                 };
             }
 
-            // 5. 单段兜底
             return {
                 serviceId: parts[0],
-                subPath: null
+                subPath: '/',
+                mode: 'exact'
             };
         };
 
@@ -406,7 +433,7 @@ class ApiServer {
                 return res.status(404).json({ error: '无效的服务代理请求路径' });
             }
 
-            const { serviceId, subPath } = target;
+            const { serviceId, subPath, mode } = target;
 
             // 拦截内网发出的健康探测请求
             if (req.headers['x-health-probe']) {
@@ -419,21 +446,47 @@ class ApiServer {
                 }
             }
 
-            // 智能提取参数
+            // 透明反代模式与网关模式统一走 Binary-Safe 原始透传通道
+            if (mode === 'transparent' || mode === 'gateway') {
+                try {
+                    const qIdx = req.originalUrl.indexOf('?');
+                    const rawQuery = qIdx >= 0 ? req.originalUrl.slice(qIdx) : '';
+                    const rawUrl = `${subPath || '/'}${rawQuery}`;
+
+                    let bodyBuffer = Buffer.alloc(0);
+                    if (Buffer.isBuffer(req.body)) {
+                        bodyBuffer = req.body;
+                    } else if (typeof req.body === 'string') {
+                        bodyBuffer = Buffer.from(req.body);
+                    } else if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+                        bodyBuffer = Buffer.from(JSON.stringify(req.body));
+                    }
+
+                    const result = await this.controller.pullTransparent(serviceId, {
+                        method: req.method,
+                        rawUrl,
+                        headers: req.headers,
+                        bodyBuffer
+                    });
+
+                    if (result.headers) {
+                        for (const [k, v] of Object.entries(result.headers)) {
+                            if (v !== undefined) res.setHeader(k, v);
+                        }
+                    }
+                    return res.status(result.statusCode || 200).send(result.body);
+                } catch (err) {
+                    return res.status(502).json({ error: err.message });
+                }
+            }
+
+            // Exact 模式
             let params = {};
             if (Object.keys(req.query).length > 0) {
                 params = { ...req.query };
             }
             if (req.body && Object.keys(req.body).length > 0) {
                 params = { ...params, ...req.body };
-            }
-
-            // 注入网关元数据
-            if (subPath || req.method !== 'GET') {
-                params.__gateway = {
-                    path: subPath || '',
-                    method: req.method
-                };
             }
 
             try {
@@ -453,6 +506,35 @@ class ApiServer {
         router.all('/proxy/:serviceId/*', (req, res) => {
             const tail = req.params.serviceId + '/' + req.params[0];
             _handleProxyRequest(req, res, tail);
+        });
+
+        // 15c. 透明反代虚拟端口管理 API (Virtual Port)
+        router.get('/services/virtual-ports', (req, res) => {
+            try {
+                res.json({ success: true, data: this.controller.getVirtualPorts() });
+            } catch (err) {
+                res.status(500).json({ success: false, error: err.message });
+            }
+        });
+
+        router.post('/services/virtual-ports/start', (req, res) => {
+            try {
+                const { port, serviceId, host, timeout } = req.body;
+                this.controller.startVirtualPort({ port, serviceId, host, timeout });
+                res.json({ success: true, data: this.controller.getVirtualPorts() });
+            } catch (err) {
+                res.status(400).json({ success: false, error: err.message });
+            }
+        });
+
+        router.post('/services/virtual-ports/stop', (req, res) => {
+            try {
+                const { port } = req.body;
+                this.controller.stopVirtualPort(port);
+                res.json({ success: true, data: this.controller.getVirtualPorts() });
+            } catch (err) {
+                res.status(400).json({ success: false, error: err.message });
+            }
         });
 
         // 16. TCP 端口转发隧道管理 API

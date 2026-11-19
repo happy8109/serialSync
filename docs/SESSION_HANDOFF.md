@@ -5,8 +5,8 @@
 ---
 
 ## 📌 当前进行中任务基准 (Active Context)
-- **当前核心主线**：Windows 7 兼容性修复（`os.hostname()` ENOSYS 安全回退）与服务发现/路由体系维护
-- **当前版本基准**：`3.0.6`
+- **当前核心主线**：HTTP/1.1 通用透明反向代理重构（Virtual Port + Binary-Safe 透传 + 配置精简），后续待推进聊天文件传输 MD5 分站仓库升级
+- **当前版本基准**：`3.0.7`
 - **当前分支状态**：`main`
 
 ---
@@ -14,10 +14,13 @@
 ## 🎯 核心业务与功能最新里程碑 (Core Feature Baseline)
 > **说明**：记录最近一次核心业务功能演进的物理提交与资产清单，供新会话启动时 100% 无损还原业务上下文。辅助性的文档/工作流变更不得覆写此处内容。
 
-### [修复：Windows 7 + Node.js 18 下 `os.hostname()` 抛出 `ENOSYS` 启动崩溃 (v3.0.6)]
-- **修复概述**：
-  - 新增 [osUtils.js](file:///e:/nodejs/serialSync/src/utils/osUtils.js)，提供 `getSafeHostname()` 安全封装：优先调用 `os.hostname()`，捕获异常后回退至 `process.env.COMPUTERNAME || process.env.HOSTNAME || 'localhost'`。
-  - 将 [AppController.js](file:///e:/nodejs/serialSync/src/core/interface/AppController.js)、[RouteEngine.js](file:///e:/nodejs/serialSync/src/core/router/RouteEngine.js)、[MessageService.js](file:///e:/nodejs/serialSync/src/core/services/MessageService.js)、[RelayService.js](file:///e:/nodejs/serialSync/src/core/services/RelayService.js)、[TunnelService.js](file:///e:/nodejs/serialSync/src/core/services/TunnelService.js) 中全部 `os.hostname()` 直接调用统一替换为 `getSafeHostname()`。
+### [阶段性重构：HTTP/1.1 通用透明反向代理（Virtual Port）与网络域自动派生 (v3.0.7)]
+- **改造概述**：
+  - 固化两阶段架构演进方案文档 [v4_architecture_refactor_plan.md](file:///e:/nodejs/serialSync/docs/v4_architecture_refactor_plan.md)。
+  - 在 [HttpProxyService.js](file:///e:/nodejs/serialSync/src/core/services/HttpProxyService.js) 实现 `transparent` 透明反代模式与本地独立虚拟端口监听（`startVirtualPort` / `stopVirtualPort` / `loadVirtualPortsFromConfig`），支持 Raw Request Forwarding、基于 `Buffer.concat` 的二进制安全响应与完整状态码/响应头透传，以及原生 `zlib` 串口自动压缩。
+  - 在 [AppController.js](file:///e:/nodejs/serialSync/src/core/interface/AppController.js) 实现 `identity.network` 基于 `nodeId` 自动派生（`net-${nodeId}`）与覆写保护，避免人为错配导致断网。
+  - 在 [ApiServer.js](file:///e:/nodejs/serialSync/src/server/ApiServer.js) 修复 `_resolveProxyTarget` 三段式 FQDN 解析截断问题，并新增虚拟端口管理接口（`/api/services/virtual-ports*`）。
+  - 在 [ServiceManager.jsx](file:///e:/nodejs/serialSync/src/web/src/features/api-forwarder/ServiceManager.jsx) 与 [SettingsModal.jsx](file:///e:/nodejs/serialSync/src/web/src/features/settings/SettingsModal.jsx) 适配透明反代模式、虚拟端口绑定弹窗与只读自动派生网络域展示。
 
 ### [里程碑：服务发现实时对齐、微服务全限定名寻址与不可变物理真 ID 架构落地]
 - **重构成果概述**：
@@ -57,6 +60,7 @@
 ## 📜 历史交接归档流水 (Archive History)
 | 日期 | 版本 | 类型 | 关键成果概述 |
 | :--- | :--- | :--- | :--- |
+| 2026-11-19 | 3.0.7 | feat | 重构 HTTP/1.1 通用透明反代（Virtual Port、Binary-Safe 透传、zlib 压缩）与网络域自动派生，固化 v4 开发方案文档 |
 | 2026-11-18 | 3.0.6 | fix | 修复 Windows 7 + Node.js 18 下 os.hostname() 抛出 ENOSYS 启动崩溃，新增 getSafeHostname() 安全回退 |
 | 2026-10-16 | 3.0.5 | feature | 实现服务发现自动清理对齐、微服务全限定名寻址与 8 位字母数字不可变 nodeId 架构全栈贯通 |
 | 2026-10-16 | 3.0.4 | refactor | 完成多网单串口路由、LAN多对端总线、跨网API网关、TCP端口转发隧道重构与WebUI设置适配 |

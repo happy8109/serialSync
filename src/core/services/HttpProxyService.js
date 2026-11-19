@@ -9,6 +9,7 @@ const http = require('http');
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const config = require('config');
 const { logger } = require('../../utils/logger');
 
@@ -21,6 +22,23 @@ const PT = {
     CHUNK: 0x34
 };
 
+// HTTP Hop-by-Hop headers that must not be forwarded across proxies
+const HOP_BY_HOP_HEADERS = new Set([
+    'host',
+    'connection',
+    'keep-alive',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+    'proxy-connection',
+    'content-length'
+]);
+
+const COMPRESS_THRESHOLD_BYTES = 512;
+
 class HttpProxyService extends EventEmitter {
     constructor() {
         super();
@@ -30,6 +48,9 @@ class HttpProxyService extends EventEmitter {
         // Service Registry
         this.localServices = new Map();
         this.remoteServices = new Map();
+
+        // Virtual Ports (Transparent Reverse Proxy listeners): Map<port, Object>
+        this.virtualPorts = new Map();
 
         // Pending Requests
         this.pendingRequests = new Map();
@@ -139,6 +160,8 @@ class HttpProxyService extends EventEmitter {
             }
         }
         this.logger.info(`Loaded ${this.localServices.size} local services`);
+
+        this.loadVirtualPortsFromConfig(cfg);
     }
 
     /**
@@ -199,7 +222,9 @@ class HttpProxyService extends EventEmitter {
                     headers: svc.headers,
                     params: svc.params
                 };
-                if (svc.mode === 'gateway') entry.mode = 'gateway';
+                if (svc.mode === 'gateway' || svc.mode === 'transparent') {
+                    entry.mode = svc.mode;
+                }
                 currentConfig.services.localServices[id] = entry;
             }
 
@@ -244,10 +269,9 @@ class HttpProxyService extends EventEmitter {
     // =========================================================================
 
     /**
-     * Call a service (Local direct execution or remote multi-network routing)
+     * Resolve target network destination & actual service ID
      */
-    async pullService(serviceId, params = {}, timeout = 30000) {
-        // 1. 解析目标网络/主机与真实服务名称
+    _resolveTarget(serviceId) {
         let targetDst = null;
         let actualServiceId = serviceId;
 
@@ -268,7 +292,6 @@ class HttpProxyService extends EventEmitter {
                 actualServiceId = parts[1];
             }
         } else if (this.remoteServices.has(serviceId)) {
-            // 纯短 ID: 查找已知远程服务
             const remote = this.remoteServices.get(serviceId);
             if (remote && remote.targetNode) {
                 targetDst = remote.targetNode;
@@ -280,7 +303,107 @@ class HttpProxyService extends EventEmitter {
             actualServiceId = remote.id || serviceId;
         }
 
-        // 2. 如果解析到目标或属于已知远程服务，优先发起跨网/串口远程调用
+        return { targetDst, actualServiceId };
+    }
+
+    /**
+     * Dispatch a PT.CALL request to remote node and await response
+     */
+    _dispatchCallRequest(serviceId, targetDst, request, timeout = 30000) {
+        const requestId = request.id;
+        const payload = Buffer.from(JSON.stringify(request));
+
+        if (this.routeEngine) {
+            this.routeEngine.send({
+                type: PT.CALL,
+                dst: targetDst,
+                payload,
+                priority: 1
+            });
+            this.logger.info(`[PULL] Requesting ${serviceId} -> dst=${targetDst} (${requestId})`);
+        } else if (this.scheduler) {
+            this.scheduler.enqueue(PT.CALL, 0, payload, 1);
+            this.logger.info(`[PULL] Requesting ${serviceId} via Serial (${requestId})`);
+        } else {
+            throw new Error('No transport available to call service');
+        }
+
+        return new Promise((resolve, reject) => {
+            const timer = setTimeout(() => {
+                this.pendingRequests.delete(requestId);
+                reject(new Error(`Service call timeout: ${serviceId}`));
+            }, timeout);
+
+            this.pendingRequests.set(requestId, {
+                resolve,
+                reject,
+                timer,
+                chunks: [],
+                totalChunks: 0
+            });
+        });
+    }
+
+    _filterHeaders(headers = {}) {
+        const out = {};
+        for (const [k, v] of Object.entries(headers)) {
+            const lower = k.toLowerCase();
+            if (!HOP_BY_HOP_HEADERS.has(lower) && v !== undefined) {
+                out[lower] = v;
+            }
+        }
+        return out;
+    }
+
+    _isCompressibleContentType(contentType = '') {
+        const ct = String(contentType).toLowerCase();
+        return ct.includes('text/') ||
+            ct.includes('application/json') ||
+            ct.includes('application/javascript') ||
+            ct.includes('application/xml') ||
+            ct.includes('application/x-www-form-urlencoded') ||
+            ct.includes('image/svg+xml') ||
+            ct.includes('+json') ||
+            ct.includes('+xml');
+    }
+
+    _compressIfBeneficial(buf, headers = {}) {
+        if (!Buffer.isBuffer(buf) || buf.length <= COMPRESS_THRESHOLD_BYTES) {
+            return { buffer: buf || Buffer.alloc(0), compressed: false };
+        }
+        // Skip if already encoded (e.g. gzip/br/deflate)
+        const encoding = headers['content-encoding'] || headers['Content-Encoding'];
+        if (encoding) {
+            return { buffer: buf, compressed: false };
+        }
+        const ct = headers['content-type'] || headers['Content-Type'] || '';
+        if (ct && !this._isCompressibleContentType(ct)) {
+            return { buffer: buf, compressed: false };
+        }
+        try {
+            const gz = zlib.gzipSync(buf);
+            if (gz.length < buf.length * 0.9) {
+                return { buffer: gz, compressed: true };
+            }
+        } catch (e) {
+            // fallback to uncompressed
+        }
+        return { buffer: buf, compressed: false };
+    }
+
+    _decompressIfNeeded(base64Str, compressed) {
+        if (!base64Str) return Buffer.alloc(0);
+        const raw = Buffer.from(base64Str, 'base64');
+        if (!compressed) return raw;
+        return zlib.gunzipSync(raw);
+    }
+
+    /**
+     * Call a service (Local direct execution or remote multi-network routing)
+     */
+    async pullService(serviceId, params = {}, timeout = 30000) {
+        const { targetDst, actualServiceId } = this._resolveTarget(serviceId);
+
         if (targetDst) {
             const requestId = this._generateRequestId();
             const request = {
@@ -289,45 +412,81 @@ class HttpProxyService extends EventEmitter {
                 caller: this.routeEngine ? this.routeEngine.localAddress : '',
                 params
             };
-
-            const payload = Buffer.from(JSON.stringify(request));
-
-            if (this.routeEngine) {
-                this.routeEngine.send({
-                    type: PT.CALL,
-                    dst: targetDst,
-                    payload,
-                    priority: 1
-                });
-                this.logger.info(`[PULL] Requesting ${serviceId} -> dst=${targetDst} (${requestId})`);
-            } else if (this.scheduler) {
-                this.scheduler.enqueue(PT.CALL, 0, payload, 1);
-                this.logger.info(`[PULL] Requesting ${serviceId} via Serial (${requestId})`);
-            } else {
-                throw new Error('No transport available to call service');
-            }
-
-            return new Promise((resolve, reject) => {
-                const timer = setTimeout(() => {
-                    this.pendingRequests.delete(requestId);
-                    reject(new Error(`Service call timeout: ${serviceId}`));
-                }, timeout);
-
-                this.pendingRequests.set(requestId, {
-                    resolve,
-                    reject,
-                    timer,
-                    chunks: [], // For reassembly
-                    totalChunks: 0
-                });
-            });
+            return await this._dispatchCallRequest(serviceId, targetDst, request, timeout);
         }
 
-        // 3. 回退：如果既不是远程服务也无网络路径，且本地注册了该服务，在本地执行
         if (this.localServices.has(serviceId)) {
             return await this._callLocalService(serviceId, params);
         }
 
+        throw new Error(`Service not found: ${serviceId}`);
+    }
+
+    /**
+     * Transparent HTTP/1.1 Reverse Proxy Call (Binary-Safe, Raw Forwarding)
+     * @param {string} serviceId
+     * @param {Object} reqInfo - { method, rawUrl, headers, bodyBuffer }
+     * @param {number} timeout
+     * @returns {Promise<{ statusCode: number, headers: Object, body: Buffer }>}
+     */
+    async pullTransparent(serviceId, reqInfo, timeout = 30000) {
+        const { targetDst, actualServiceId } = this._resolveTarget(serviceId);
+
+        if (targetDst) {
+            const requestId = this._generateRequestId();
+            const filteredHeaders = this._filterHeaders(reqInfo.headers);
+            const rawBody = Buffer.isBuffer(reqInfo.bodyBuffer) ? reqInfo.bodyBuffer : Buffer.alloc(0);
+            const { buffer: outBuf, compressed } = this._compressIfBeneficial(rawBody, filteredHeaders);
+
+            const request = {
+                id: requestId,
+                mode: 'transparent',
+                service: actualServiceId,
+                caller: this.routeEngine ? this.routeEngine.localAddress : '',
+                method: reqInfo.method || 'GET',
+                rawUrl: reqInfo.rawUrl || '/',
+                headers: filteredHeaders,
+                body: outBuf.length > 0 ? outBuf.toString('base64') : null,
+                compressed
+            };
+
+            const rawResult = await this._dispatchCallRequest(serviceId, targetDst, request, timeout);
+            const envelope = typeof rawResult === 'string' ? JSON.parse(rawResult) : rawResult;
+            return {
+                statusCode: envelope.statusCode || 200,
+                headers: envelope.headers || {},
+                body: this._decompressIfNeeded(envelope.body, envelope.compressed)
+            };
+        }
+
+        if (this.localServices.has(serviceId)) {
+            return await this._callLocalTransparent(serviceId, reqInfo);
+        }
+
+        throw new Error(`Service not found: ${serviceId}`);
+    }
+
+    async _callLocalTransparent(serviceId, reqInfo) {
+        const svc = this.localServices.get(serviceId);
+        if (!svc) throw new Error(`Local service not found: ${serviceId}`);
+        if (!svc.enabled) throw new Error(`Local service disabled: ${serviceId}`);
+
+        const mergedHeaders = {
+            ...this._filterHeaders(svc.headers),
+            ...this._filterHeaders(reqInfo.headers)
+        };
+        const res = await this.callLocalHttpRaw(svc.endpoint, {
+            method: reqInfo.method || 'GET',
+            rawUrl: reqInfo.rawUrl || '/',
+            headers: mergedHeaders,
+            body: reqInfo.bodyBuffer,
+            timeout: svc.timeout
+        });
+        return {
+            statusCode: res.statusCode,
+            headers: this._filterHeaders(res.headers),
+            body: res.bodyBuffer
+        };
     }
 
     /**
@@ -469,7 +628,7 @@ class HttpProxyService extends EventEmitter {
             request = JSON.parse(frame.body.toString());
         } catch (e) { return; }
 
-        const { id, service, params, caller } = request;
+        const { id, service, params, caller, mode } = request;
         const targetCaller = caller || (frame.route ? frame.route.src : '*');
 
         // 1. Strict Whitelist Check
@@ -482,15 +641,48 @@ class HttpProxyService extends EventEmitter {
             return this._sendResult(id, 500, null, `Service disabled: ${service}`, targetCaller);
         }
 
-        // Meta Extraction
+        // 1.5 Transparent Reverse Proxy Mode (Binary-Safe, Raw Forwarding)
+        if (mode === 'transparent') {
+            try {
+                const reqBody = this._decompressIfNeeded(request.body, request.compressed);
+                const mergedHeaders = {
+                    ...this._filterHeaders(svc.headers),
+                    ...this._filterHeaders(request.headers)
+                };
+
+                const res = await this.callLocalHttpRaw(svc.endpoint, {
+                    method: request.method || 'GET',
+                    rawUrl: request.rawUrl || '/',
+                    headers: mergedHeaders,
+                    body: reqBody,
+                    timeout: svc.timeout
+                });
+
+                const resHeaders = this._filterHeaders(res.headers);
+                const { buffer: outBuf, compressed } = this._compressIfBeneficial(res.bodyBuffer, resHeaders);
+                const envelope = JSON.stringify({
+                    __transparent: true,
+                    statusCode: res.statusCode,
+                    headers: resHeaders,
+                    body: outBuf.length > 0 ? outBuf.toString('base64') : '',
+                    compressed
+                });
+
+                this._sendResult(id, res.statusCode, envelope, null, targetCaller);
+            } catch (err) {
+                this._sendResult(id, 502, null, err.message, targetCaller);
+            }
+            return;
+        }
+
+        // 2. Exact / Legacy Gateway Mode
         let endpoint = svc.endpoint;
         let method = svc.method;
         let targetHeaders = { ...svc.headers };
         let reqBody = null;
 
-        // Extract metadata from params
-        if (params.__gateway) {
-            if (svc.mode === 'gateway') {
+        if (params && params.__gateway) {
+            if (svc.mode === 'gateway' || svc.mode === 'transparent') {
                 const gatewayMeta = params.__gateway;
                 method = gatewayMeta.method || 'GET';
 
@@ -503,8 +695,7 @@ class HttpProxyService extends EventEmitter {
             delete params.__gateway;
         }
 
-        if (params.__headers) {
-            // Merge headers (excluding host and connection to avoid conflicts)
+        if (params && params.__headers) {
             const inboundHeaders = params.__headers;
             const skipHeaders = ['host', 'connection', 'content-length'];
             for (const [k, v] of Object.entries(inboundHeaders)) {
@@ -515,15 +706,13 @@ class HttpProxyService extends EventEmitter {
             delete params.__headers;
         }
 
-        if (params.__body !== undefined) {
+        if (params && params.__body !== undefined) {
             reqBody = params.__body;
             delete params.__body;
         }
 
-        // 2. HTTP Call
         try {
-            // For gateway mode with explicit body, we pass it down
-            const callParams = reqBody !== null ? reqBody : params;
+            const callParams = reqBody !== null ? reqBody : (params || {});
 
             const result = await this.callLocalHttp(endpoint, callParams, {
                 method: method,
@@ -531,7 +720,6 @@ class HttpProxyService extends EventEmitter {
                 timeout: svc.timeout
             });
 
-            // 3. Send Result (Segmented if needed)
             this._sendResult(id, 200, result, null, targetCaller);
 
         } catch (err) {
@@ -579,6 +767,58 @@ class HttpProxyService extends EventEmitter {
             req.on('timeout', () => { req.destroy(); reject(new Error('Timeout')); });
 
             if (postData) req.write(postData);
+            req.end();
+        });
+    }
+
+    /**
+     * Binary-Safe Raw HTTP/1.1 Request Forwarder
+     * Preserves method, rawUrl (pathname + query), headers, statusCode, and Buffer body
+     */
+    async callLocalHttpRaw(baseEndpoint, options = {}) {
+        const parsedBase = new URL(baseEndpoint);
+        const method = (options.method || 'GET').toUpperCase();
+        const rawUrl = options.rawUrl || '/';
+        const basePath = parsedBase.pathname === '/' ? '' : parsedBase.pathname.replace(/\/+$/, '');
+        const reqPath = rawUrl.startsWith('/') ? rawUrl : `/${rawUrl}`;
+        const finalPath = `${basePath}${reqPath}` || '/';
+
+        const reqHeaders = { ...options.headers };
+        const bodyBuf = Buffer.isBuffer(options.body) ? options.body : Buffer.alloc(0);
+        if (bodyBuf.length > 0) {
+            reqHeaders['content-length'] = bodyBuf.length;
+        }
+
+        return new Promise((resolve, reject) => {
+            const httpMod = parsedBase.protocol === 'https:' ? https : http;
+            const req = httpMod.request({
+                hostname: parsedBase.hostname,
+                port: parsedBase.port || (parsedBase.protocol === 'https:' ? 443 : 80),
+                path: finalPath,
+                method,
+                headers: reqHeaders,
+                timeout: options.timeout || 30000
+            }, res => {
+                const chunks = [];
+                res.on('data', chunk => chunks.push(chunk));
+                res.on('end', () => {
+                    resolve({
+                        statusCode: res.statusCode || 200,
+                        headers: res.headers || {},
+                        bodyBuffer: Buffer.concat(chunks)
+                    });
+                });
+            });
+
+            req.on('error', reject);
+            req.on('timeout', () => {
+                req.destroy();
+                reject(new Error('Upstream HTTP request timeout'));
+            });
+
+            if (bodyBuf.length > 0) {
+                req.write(bodyBuf);
+            }
             req.end();
         });
     }
@@ -1028,6 +1268,156 @@ class HttpProxyService extends EventEmitter {
             }
         } catch (err) {
             this.logger.warn('Failed to broadcast local services:', err.message);
+        }
+    }
+
+    // =========================================================================
+    // Transparent Virtual Port Management (Nginx-style proxy_pass listeners)
+    // =========================================================================
+
+    loadVirtualPortsFromConfig(cfg) {
+        const list = cfg.has('services.virtualPorts') ? cfg.get('services.virtualPorts') : [];
+        if (!Array.isArray(list)) return;
+
+        for (const item of list) {
+            if (item && item.port && item.serviceId && item.enabled !== false) {
+                this.startVirtualPort(item, false);
+            }
+        }
+        if (list.length > 0) {
+            this.logger.info(`Loaded ${this.virtualPorts.size} virtual port mappings`);
+        }
+    }
+
+    startVirtualPort({ port, serviceId, host = '0.0.0.0', timeout = 60000 }, persist = true) {
+        const portNum = parseInt(port, 10);
+        if (!portNum || portNum < 1 || portNum > 65535) {
+            throw new Error(`Invalid port number: ${port}`);
+        }
+        if (!serviceId) {
+            throw new Error('serviceId is required');
+        }
+
+        if (this.virtualPorts.has(portNum)) {
+            this.stopVirtualPort(portNum, false);
+        }
+
+        const entry = {
+            port: portNum,
+            serviceId,
+            host: host || '0.0.0.0',
+            timeout,
+            active: false,
+            error: null,
+            requestCount: 0,
+            server: null
+        };
+
+        const server = http.createServer((req, res) => {
+            const chunks = [];
+            req.on('data', c => chunks.push(c));
+            req.on('end', async () => {
+                entry.requestCount++;
+                const bodyBuffer = Buffer.concat(chunks);
+                try {
+                    const result = await this.pullTransparent(serviceId, {
+                        method: req.method,
+                        rawUrl: req.url,
+                        headers: req.headers,
+                        bodyBuffer
+                    }, timeout);
+
+                    const outHeaders = { ...result.headers };
+                    if (Buffer.isBuffer(result.body)) {
+                        outHeaders['content-length'] = result.body.length;
+                    }
+                    res.writeHead(result.statusCode || 200, outHeaders);
+                    res.end(result.body);
+                } catch (err) {
+                    if (!res.headersSent) {
+                        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+                    }
+                    res.end(JSON.stringify({ error: `Proxy Error: ${err.message}` }));
+                }
+            });
+            req.on('error', (err) => {
+                if (!res.headersSent) {
+                    res.writeHead(400, { 'content-type': 'application/json' });
+                }
+                res.end(JSON.stringify({ error: err.message }));
+            });
+        });
+
+        server.on('error', (err) => {
+            entry.active = false;
+            entry.error = err.message;
+            this.logger.error(`[VirtualPort] Listen failed on ${entry.host}:${portNum}: ${err.message}`);
+            this.emit('virtual_ports_updated', this.getVirtualPorts());
+        });
+
+        server.listen(portNum, entry.host, () => {
+            entry.active = true;
+            entry.error = null;
+            this.logger.info(`[VirtualPort] Listening http://${entry.host}:${portNum} -> ${serviceId}`);
+            this.emit('virtual_ports_updated', this.getVirtualPorts());
+        });
+
+        entry.server = server;
+        this.virtualPorts.set(portNum, entry);
+
+        if (persist) {
+            this._persistVirtualPorts();
+        }
+        return true;
+    }
+
+    stopVirtualPort(port, persist = true) {
+        const portNum = parseInt(port, 10);
+        const entry = this.virtualPorts.get(portNum);
+        if (entry) {
+            if (entry.server) {
+                try {
+                    entry.server.close();
+                } catch (e) { /* ignore */ }
+            }
+            this.virtualPorts.delete(portNum);
+            this.logger.info(`[VirtualPort] Stopped listener on port ${portNum}`);
+            this.emit('virtual_ports_updated', this.getVirtualPorts());
+        }
+        if (persist) {
+            this._persistVirtualPorts();
+        }
+    }
+
+    getVirtualPorts() {
+        return Array.from(this.virtualPorts.values()).map(v => ({
+            port: v.port,
+            serviceId: v.serviceId,
+            host: v.host,
+            timeout: v.timeout,
+            active: v.active,
+            error: v.error,
+            requestCount: v.requestCount
+        }));
+    }
+
+    _persistVirtualPorts() {
+        try {
+            let currentConfig = {};
+            if (fs.existsSync(this.configPath)) {
+                currentConfig = JSON.parse(fs.readFileSync(this.configPath, 'utf8'));
+            }
+            if (!currentConfig.services) currentConfig.services = {};
+            currentConfig.services.virtualPorts = this.getVirtualPorts().map(v => ({
+                port: v.port,
+                serviceId: v.serviceId,
+                host: v.host,
+                timeout: v.timeout,
+                enabled: true
+            }));
+            fs.writeFileSync(this.configPath, JSON.stringify(currentConfig, null, 2), 'utf8');
+        } catch (err) {
+            this.logger.error('Failed to persist virtualPorts config', err);
         }
     }
 }
