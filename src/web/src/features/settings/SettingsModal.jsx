@@ -150,6 +150,52 @@ const SettingsModal = ({ isOpen, onClose }) => {
     });
     const [newPeerUrl, setNewPeerUrl] = useState('');
 
+    // IP <-> 用户名对照表状态
+    const [ipUsers, setIpUsers] = useState({});
+    const [currentClientIp, setCurrentClientIp] = useState('');
+    const [newIpUser, setNewIpUser] = useState({ ip: '', username: '' });
+
+    const fetchIpUsers = async () => {
+        try {
+            const res = await fetch('/api/identity/ip-users');
+            const data = await res.json();
+            if (data.success && data.data) {
+                setIpUsers(data.data.ipUsers || {});
+                setCurrentClientIp(data.data.currentIp || '');
+            }
+        } catch (e) { /* ignore */ }
+    };
+
+    useEffect(() => {
+        if (isOpen) {
+            fetchIpUsers();
+        }
+    }, [isOpen]);
+
+    const handleAddIpUser = async () => {
+        if (!newIpUser.ip.trim() || !newIpUser.username.trim()) return;
+        try {
+            const res = await fetch('/api/identity/ip-users', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ip: newIpUser.ip.trim(), username: newIpUser.username.trim() })
+            });
+            const data = await res.json();
+            if (data.success) {
+                setIpUsers(data.data || {});
+                setNewIpUser({ ip: '', username: '' });
+            }
+        } catch (e) { /* ignore */ }
+    };
+
+    const handleDeleteIpUser = async (ip) => {
+        try {
+            const res = await fetch(`/api/identity/ip-users/${encodeURIComponent(ip)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (data.success) setIpUsers(data.data || {});
+        } catch (e) { /* ignore */ }
+    };
+
     const [tunnelConfig, setTunnelConfig] = useState({
         enabled: true,
         allowRemoteTunnel: true,
@@ -625,6 +671,66 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                         />
                                     </div>
                                 </div>
+                            </div>
+
+                            {/* IP <-> 用户名对照表 */}
+                            <div className="space-y-3 pt-4 border-t border-border">
+                                <div className="flex items-center justify-between">
+                                    <h3 className="text-sm font-semibold flex items-center gap-2 text-primary">
+                                        内网 IP - 用户名对照表
+                                    </h3>
+                                    {currentClientIp && (
+                                        <span className="text-xs text-muted-foreground font-mono">
+                                            当前来访 IP: {currentClientIp}
+                                        </span>
+                                    )}
+                                </div>
+                                <p className="text-xs text-muted-foreground">
+                                    局域网主机发送聊天或文件时，首次设置昵称会自动与该 IP 绑定；也可在此预先配置固定映射。
+                                </p>
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={newIpUser.ip}
+                                        onChange={(e) => setNewIpUser({ ...newIpUser, ip: e.target.value })}
+                                        className="flex-1 px-3 py-1.5 rounded-md border border-input bg-background text-sm font-mono"
+                                        placeholder="局域网 IP (如 192.168.1.55)"
+                                    />
+                                    <input
+                                        type="text"
+                                        value={newIpUser.username}
+                                        onChange={(e) => setNewIpUser({ ...newIpUser, username: e.target.value })}
+                                        className="flex-1 px-3 py-1.5 rounded-md border border-input bg-background text-sm"
+                                        placeholder="用户名 (如 张三)"
+                                    />
+                                    <button
+                                        type="button"
+                                        onClick={handleAddIpUser}
+                                        className="px-3 py-1.5 rounded-md bg-primary text-primary-foreground text-sm hover:bg-primary/90 flex items-center gap-1"
+                                    >
+                                        <Plus size={14} /> 添加
+                                    </button>
+                                </div>
+                                {Object.keys(ipUsers).length > 0 && (
+                                    <div className="space-y-1.5 max-h-32 overflow-y-auto">
+                                        {Object.entries(ipUsers).map(([ip, uname]) => (
+                                            <div key={ip} className="flex items-center justify-between px-3 py-1.5 rounded bg-muted/30 border border-border/50 text-xs">
+                                                <div className="flex items-center gap-3">
+                                                    <span className="font-mono text-muted-foreground">{ip}</span>
+                                                    <span className="font-medium text-foreground">{uname}</span>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => handleDeleteIpUser(ip)}
+                                                    className="text-muted-foreground hover:text-red-500"
+                                                    title="删除映射"
+                                                >
+                                                    <Trash2 size={13} />
+                                                </button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                )}
                             </div>
 
                             {/* LAN Relay Bus */}

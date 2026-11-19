@@ -18,6 +18,7 @@ const RouteEngine = require('../router/RouteEngine');
 const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
 const { getSafeHostname } = require('../../utils/osUtils');
+const { computeFileMd5 } = require('../../utils/fileUtils');
 const appLogger = logger.create('App');
 
 /**
@@ -118,6 +119,17 @@ class AppController extends EventEmitter {
                 }
             } catch (err) {
                 appLogger.warn('Failed to persist nodeId to config file:', err.message);
+            }
+        }
+
+        // 初始化 IP <-> 用户名对照表
+        this.ipUsers = new Map();
+        if (config.has('identity.ipUsers')) {
+            const savedIpUsers = config.get('identity.ipUsers');
+            if (savedIpUsers && typeof savedIpUsers === 'object') {
+                for (const [ip, username] of Object.entries(savedIpUsers)) {
+                    if (ip && username) this.ipUsers.set(this.normalizeIp(ip), String(username));
+                }
             }
         }
 
@@ -504,32 +516,45 @@ class AppController extends EventEmitter {
     }
 
     /**
-     * 发送文件 (P2)
+     * 发送文件 (聊天界面按需分享：计算 MD5 并广播轻量元数据卡片，点击后按需拉取)
      */
     async sendFile(filePath, nickname = '') {
-        const fileId = await this.fileTransferService.sendFile(filePath);
-        
-        // 主动广播文件通知
+        const fs = require('fs');
+        const path = require('path');
+        const stats = fs.statSync(filePath);
+        const fileName = path.basename(filePath);
+        const md5 = await computeFileMd5(filePath);
+
+        const senderInfo = {
+            nickname,
+            nodeName: this.relayService.identity.nodeName,
+            nodeId: this.relayService.identity.nodeId,
+            network: this.relayService.identity.network
+        };
+
+        // 广播轻量级文件卡片（仅元数据 + MD5，不提前占用串口发送实体）
         if (this.relayService) {
-            const fs = require('fs');
-            const path = require('path');
-            const stats = fs.statSync(filePath);
-            const fileName = path.basename(filePath);
-            
             this.relayService.broadcastFileNotify({
-                fileId,
+                fileId: md5,
+                md5,
                 fileName,
                 fileSize: stats.size,
                 fullPath: filePath,
-                sender: {
-                    nickname,
-                    nodeName: this.relayService.identity.nodeName,
-                    network: this.relayService.identity.network
-                }
+                sender: senderInfo
             });
         }
-        
-        return fileId;
+
+        // 本地立即回显发送成功卡片
+        this.emit('complete', {
+            fileId: md5,
+            md5,
+            type: 'send',
+            file: fileName,
+            fileSize: stats.size,
+            fullPath: filePath
+        });
+
+        return md5;
     }
 
     pauseFileTransfer(fileId) {
@@ -770,6 +795,71 @@ class AppController extends EventEmitter {
     triggerSyncDiscovery() {
         this.fileSyncService.broadcastDiscovery();
         return this.fileSyncService.getDiscoveredShares();
+    }
+
+    // =========================================================================
+    // 局域网 IP <-> 用户名对照表管理
+    // =========================================================================
+
+    normalizeIp(rawIp = '') {
+        let ip = String(rawIp || '').trim();
+        if (ip.startsWith('::ffff:')) ip = ip.slice(7);
+        if (ip === '::1') ip = '127.0.0.1';
+        return ip;
+    }
+
+    resolveUsername(rawIp, explicitNickname = '') {
+        const ip = this.normalizeIp(rawIp);
+        const nick = String(explicitNickname || '').trim();
+        if (nick) {
+            if (ip && this.ipUsers.get(ip) !== nick) {
+                this.ipUsers.set(ip, nick);
+                this._persistIpUsers();
+            }
+            return nick;
+        }
+        return (ip && this.ipUsers.get(ip)) || '';
+    }
+
+    setIpUser(rawIp, username) {
+        const ip = this.normalizeIp(rawIp);
+        const name = String(username || '').trim();
+        if (!ip || !name) throw new Error('IP and username are required');
+        this.ipUsers.set(ip, name);
+        this._persistIpUsers();
+        return this.getIpUsers();
+    }
+
+    removeIpUser(rawIp) {
+        const ip = this.normalizeIp(rawIp);
+        this.ipUsers.delete(ip);
+        this._persistIpUsers();
+        return this.getIpUsers();
+    }
+
+    getIpUsers() {
+        const obj = {};
+        for (const [ip, name] of this.ipUsers.entries()) {
+            obj[ip] = name;
+        }
+        return obj;
+    }
+
+    _persistIpUsers() {
+        try {
+            const fs = require('fs');
+            const path = require('path');
+            const configPath = path.join(process.cwd(), 'config', 'default.json');
+            let currentConfig = {};
+            if (fs.existsSync(configPath)) {
+                currentConfig = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+            }
+            if (!currentConfig.identity) currentConfig.identity = {};
+            currentConfig.identity.ipUsers = this.getIpUsers();
+            fs.writeFileSync(configPath, JSON.stringify(currentConfig, null, 2), 'utf8');
+        } catch (err) {
+            appLogger.warn('Failed to persist ipUsers:', err.message);
+        }
     }
 }
 

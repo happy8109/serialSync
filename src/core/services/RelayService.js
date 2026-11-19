@@ -20,6 +20,7 @@ const os = require('os');
 const RoutePacket = require('../router/RoutePacket');
 const { logger } = require('../../utils/logger');
 const { getSafeHostname } = require('../../utils/osUtils');
+const { computeFileMd5 } = require('../../utils/fileUtils');
 const relayLogger = logger.create('Relay');
 
 // 帧类型常量
@@ -57,13 +58,17 @@ class RelayService extends EventEmitter {
         this.msgIdQueue = [];
         this.MAX_SEEN_IDS = 500;
 
-        // 文件中继：待处理拉取请求表
-        // Map<fileId, { direction: 'serial'|'relay', requestedAt: number, reqId: string }>
+        // 文件中继：待处理拉取请求表 (兼容旧版单条查询) 与 Singleflight 并发合并表
+        // Map<fileId, { direction: 'serial'|'relay'|'local', requestedAt: number, reqId: string }>
         this.pendingRelayPulls = new Map();
+        // Map<fileId, { fileName: string, startedAt: number, subscribers: Array<{ direction, reqId, peerKey }> }>
+        this.activePulls = new Map();
         this.PULL_TIMEOUT = 300000; // 拉取超时 5 分钟
 
-        // 文件接收目录
+        // 文件接收目录与沿途分站缓存仓库
         this.receivedDir = path.join(process.cwd(), 'received');
+        this.stagingDir = path.join(this.receivedDir, '.staging');
+        this.localHttpPort = 3000;
 
         // 文件 ID → 文件路径映射（由文件通知填充）
         this.fileIndex = new Map();
@@ -85,6 +90,10 @@ class RelayService extends EventEmitter {
      */
     setFileTransferService(fileTransferService) {
         this.fileTransferService = fileTransferService;
+    }
+
+    setLocalHttpPort(port) {
+        if (port) this.localHttpPort = port;
     }
 
     /**
@@ -489,11 +498,11 @@ class RelayService extends EventEmitter {
                 break;
 
             case 'file_pull_req':
-                this._handleRelayPullReq(data);
+                this._handleRelayPullReq(data, peerEntry);
                 break;
 
             case 'file_pull_resp':
-                this._handleRelayPullResp(data);
+                this._handleRelayPullResp(data, peerEntry);
                 break;
 
             default:
@@ -644,38 +653,149 @@ class RelayService extends EventEmitter {
      * @param {string} fileName
      * @returns {Promise}
      */
+    _ensureStagingDir() {
+        if (!fs.existsSync(this.receivedDir)) {
+            fs.mkdirSync(this.receivedDir, { recursive: true });
+        }
+        if (!fs.existsSync(this.stagingDir)) {
+            fs.mkdirSync(this.stagingDir, { recursive: true });
+        }
+    }
+
+    _getStagingPath(fileId) {
+        return path.join(this.stagingDir, `${fileId}.blob`);
+    }
+
+    _getPartPath(fileId) {
+        return path.join(this.stagingDir, `${fileId}.part`);
+    }
+
+    /**
+     * Singleflight 订阅登记：
+     * 若已有同 fileId 拉取任务在进行，返回 false（复用上游请求，绝不重复占用串口）；
+     * 否则创建新任务并返回 true（由调用方发起唯一一次上游拉取）。
+     */
+    _addPullSubscriber(fileId, fileName, subscriber) {
+        if (this.activePulls.has(fileId)) {
+            const entry = this.activePulls.get(fileId);
+            const exists = entry.subscribers.some(
+                s => s.direction === subscriber.direction && s.peerKey === subscriber.peerKey
+            );
+            if (!exists) {
+                entry.subscribers.push(subscriber);
+            }
+            relayLogger.info(`[Singleflight] 合并并发拉取请求: ${fileName} (${fileId}), 当前订阅数=${entry.subscribers.length}`);
+            return false;
+        }
+        this.activePulls.set(fileId, {
+            fileName,
+            startedAt: Date.now(),
+            subscribers: [subscriber]
+        });
+        return true;
+    }
+
+    _copyToReceived(srcPath, fileName) {
+        if (!fs.existsSync(this.receivedDir)) {
+            fs.mkdirSync(this.receivedDir, { recursive: true });
+        }
+        const destPath = path.join(this.receivedDir, fileName);
+        if (path.resolve(srcPath) !== path.resolve(destPath)) {
+            fs.copyFileSync(srcPath, destPath);
+        }
+        return destPath;
+    }
+
+    _promoteToStaging(fileId, srcPath) {
+        this._ensureStagingDir();
+        const stagingPath = this._getStagingPath(fileId);
+        if (path.resolve(srcPath) !== path.resolve(stagingPath) && !fs.existsSync(stagingPath)) {
+            const partPath = this._getPartPath(fileId);
+            fs.copyFileSync(srcPath, partPath);
+            fs.renameSync(partPath, stagingPath);
+        }
+        return fs.existsSync(stagingPath) ? stagingPath : srcPath;
+    }
+
+    _completeAllSubscribers(fileId, fileName, stagingPath) {
+        const entry = this.activePulls.get(fileId);
+        if (!entry) return;
+        this.activePulls.delete(fileId);
+        this.pendingRelayPulls.delete(fileId);
+
+        let serialNotified = false;
+        for (const sub of entry.subscribers) {
+            if (sub.direction === 'local') {
+                const finalPath = this._copyToReceived(stagingPath, sub.fileName || fileName);
+                this.emit('relay_pull_complete', { fileId, fileName: sub.fileName || fileName, fullPath: finalPath });
+            } else if (sub.direction === 'relay') {
+                this._sendToPeer({
+                    action: 'file_pull_resp',
+                    data: {
+                        reqId: sub.reqId,
+                        fileId,
+                        available: true,
+                        httpPort: this.localHttpPort,
+                        downloadUrl: `/api/relay/file/${fileId}`
+                    }
+                });
+            } else if (sub.direction === 'serial' && !serialNotified) {
+                serialNotified = true;
+                this.emit('relay_send_file', { fileId, fileName: sub.fileName || fileName, fullPath: stagingPath });
+            }
+        }
+    }
+
+    _failAllSubscribers(fileId, errorMsg) {
+        const entry = this.activePulls.get(fileId);
+        this.activePulls.delete(fileId);
+        this.pendingRelayPulls.delete(fileId);
+
+        const partPath = this._getPartPath(fileId);
+        if (fs.existsSync(partPath)) {
+            try { fs.unlinkSync(partPath); } catch (e) { /* ignore */ }
+        }
+
+        if (!entry) return;
+        for (const sub of entry.subscribers) {
+            if (sub.direction === 'local') {
+                this.emit('relay_pull_failed', { fileId, error: errorMsg });
+            } else if (sub.direction === 'relay') {
+                this._sendToPeer({
+                    action: 'file_pull_resp',
+                    data: { reqId: sub.reqId, fileId, available: false, error: errorMsg }
+                });
+            } else if (sub.direction === 'serial' && this.scheduler) {
+                const body = Buffer.from(JSON.stringify({ reqId: sub.reqId, fileId, status: 'not_found', error: errorMsg }), 'utf8');
+                this.scheduler.enqueue(PT.FILE_RELAY_RESP, 0, body, 1);
+            }
+        }
+    }
+
     async requestFilePull(fileId, fileName) {
-        // 1. 检查本地是否有文件
+        // 1. 检查本地文件索引或分站缓存仓库
         const localFile = this._findLocalFile(fileId, fileName);
         if (localFile) {
-            return { available: true, fullPath: localFile };
+            const finalPath = this._copyToReceived(localFile, fileName);
+            return { available: true, fullPath: finalPath };
         }
 
-        // 1.5 防死锁检测：如果本地正在通过串口接收该文件，无需向外重复请求，直接挂起等待接收完成
-        if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
-            relayLogger.info(`[中继] 本地 WebUI 拉取文件，但文件已在串口接收中: ${fileId}，进入就绪等待`);
-            const reqId = `pull_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
-            this.pendingRelayPulls.set(fileId, {
-                direction: 'local',
-                requestedAt: Date.now(),
-                reqId,
-                fileName
-            });
-            return { available: false, pulling: true, reqId, status: 'receiving' };
-        }
-
-        // 2. 发起拉取请求
         const reqId = `pull_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-        // 记录待处理请求（来自 local/WebUI）
-        this.pendingRelayPulls.set(fileId, {
-            direction: 'local',
-            requestedAt: Date.now(),
-            reqId,
-            fileName
-        });
+        // 1.5 防死锁与 Singleflight 并发合并：若已有拉取/串口接收在进行，直接订阅等待
+        const isFirst = this._addPullSubscriber(fileId, fileName, { direction: 'local', reqId, peerKey: 'local', fileName });
+        if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
+            relayLogger.info(`[中继] 文件已在串口接收中: ${fileId}，进入 Singleflight 等待`);
+            this.pendingRelayPulls.set(fileId, { direction: 'local', requestedAt: Date.now(), reqId, fileName });
+            return { available: false, pulling: true, reqId, status: 'receiving' };
+        }
+        if (!isFirst) {
+            return { available: false, pulling: true, reqId, coalesced: true };
+        }
 
-        // 优先通过路由引擎广播拉取
+        this.pendingRelayPulls.set(fileId, { direction: 'local', requestedAt: Date.now(), reqId, fileName });
+
+        // 2. 发起唯一一次上游拉取请求
         if (this.routeEngine) {
             const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
             this.routeEngine.send({
@@ -685,17 +805,15 @@ class RelayService extends EventEmitter {
                 priority: 1
             });
         } else if (this.relayReady) {
-            // 优先通过 relay 对端拉取（LAN 快）
             this._sendToPeer({
                 action: 'file_pull_req',
                 data: { reqId, fileId, fileName }
             });
         } else if (this.scheduler) {
-            // 通过串口请求
             const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
             this.scheduler.enqueue(PT.FILE_RELAY_REQ, 0, body, 1);
         } else {
-            this.pendingRelayPulls.delete(fileId);
+            this._failAllSubscribers(fileId, '无可用中继链路');
             throw new Error('无可用中继链路');
         }
 
@@ -718,34 +836,25 @@ class RelayService extends EventEmitter {
                 return;
             }
 
-            // 检查本地是否有文件
+            // 检查本地是否有文件（含分站缓存）
             const localFile = this._findLocalFile(fileId, fileName);
             if (localFile) {
                 relayLogger.info(`[中继] 本地找到文件，直接通过串口发送: ${localFile}`);
-                // 通知上层发起 FILE_OFFER（由 AppController 处理）
                 this.emit('relay_send_file', { fileId, fileName, fullPath: localFile });
                 return;
             }
 
-            // 防死锁：若本地正在从串口接收该文件，将请求登记为挂起，接收完成后自动向串口回送
+            // Singleflight 并发合并（含正在串口接收中）
+            const isFirst = this._addPullSubscriber(fileId, fileName, { direction: 'serial', reqId, peerKey: 'serial', fileName });
+            this.pendingRelayPulls.set(fileId, { direction: 'serial', requestedAt: Date.now(), reqId, fileName });
+
             if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
-                relayLogger.info(`[中继] 本地正在接收该文件 (${fileId})，暂缓向外拉取，等待接收完成`);
-                this.pendingRelayPulls.set(fileId, {
-                    direction: 'serial',
-                    requestedAt: Date.now(),
-                    reqId,
-                    fileName
-                });
+                relayLogger.info(`[中继] 本地正在接收该文件 (${fileId})，已合并至 Singleflight 等待`);
                 return;
             }
-
-            // 本地没有，记录请求方向（来自串口），转发给 relay 对端
-            this.pendingRelayPulls.set(fileId, {
-                direction: 'serial',
-                requestedAt: Date.now(),
-                reqId,
-                fileName
-            });
+            if (!isFirst) {
+                return;
+            }
 
             if (this.relayReady) {
                 relayLogger.info(`[中继] 本地无文件，转发拉取请求到 LAN 对端`);
@@ -754,12 +863,8 @@ class RelayService extends EventEmitter {
                     data: { reqId, fileId, fileName }
                 });
             } else {
-                // 无 relay 对端可用，返回错误
                 relayLogger.warn(`[中继] 本地无文件且无 relay 对端，拉取失败`);
-                this.pendingRelayPulls.delete(fileId);
-                const resp = { reqId, fileId, status: 'not_found', error: '文件不存在' };
-                const body = Buffer.from(JSON.stringify(resp), 'utf8');
-                this.scheduler.enqueue(PT.FILE_RELAY_RESP, 0, body, 1);
+                this._failAllSubscribers(fileId, '文件不存在');
             }
         } catch (err) {
             relayLogger.error(`[中继] 解析串口拉取请求失败: ${err.message}`);
@@ -788,12 +893,13 @@ class RelayService extends EventEmitter {
     /**
      * 处理从 relay 对端收到的文件拉取请求
      */
-    _handleRelayPullReq(data) {
+    _handleRelayPullReq(data, peerEntry = null) {
         const { reqId, fileId, fileName } = data;
+        const peerKey = peerEntry ? peerEntry.id : 'lan';
 
         relayLogger.info(`[中继] LAN 收到文件拉取请求: ${fileName} (${fileId})`);
 
-        // 检查本地是否有文件
+        // 检查本地是否有文件（含分站缓存）
         const localFile = this._findLocalFile(fileId, fileName);
         if (localFile) {
             relayLogger.info(`[中继] 本地找到文件，返回下载地址`);
@@ -802,31 +908,24 @@ class RelayService extends EventEmitter {
                 data: {
                     reqId, fileId,
                     available: true,
+                    httpPort: this.localHttpPort,
                     downloadUrl: `/api/relay/file/${fileId}`
                 }
             });
             return;
         }
 
-        // 防死锁：检查是否正在通过串口接收该文件
+        // Singleflight 并发合并
+        const isFirst = this._addPullSubscriber(fileId, fileName, { direction: 'relay', reqId, peerKey, fileName });
+        this.pendingRelayPulls.set(fileId, { direction: 'relay', requestedAt: Date.now(), reqId, fileName });
+
         if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
-            relayLogger.info(`[中继] 文件正在接收中 (${fileId})，暂缓向外拉取，待接收完成后自动回传`);
-            this.pendingRelayPulls.set(fileId, {
-                direction: 'relay',
-                requestedAt: Date.now(),
-                reqId,
-                fileName
-            });
+            relayLogger.info(`[中继] 文件正在接收中 (${fileId})，已合并至 Singleflight 等待`);
             return;
         }
-
-        // 本地没有且未在接收，记录请求方向（来自 relay），转发到串口
-        this.pendingRelayPulls.set(fileId, {
-            direction: 'relay',
-            requestedAt: Date.now(),
-            reqId,
-            fileName
-        });
+        if (!isFirst) {
+            return;
+        }
 
         if (this.routeEngine) {
             relayLogger.info(`[中继] 本地无文件，通过路由引擎广播文件拉取请求`);
@@ -842,142 +941,131 @@ class RelayService extends EventEmitter {
             const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
             this.scheduler.enqueue(PT.FILE_RELAY_REQ, 0, body, 1);
         } else {
-            this.pendingRelayPulls.delete(fileId);
-            this._sendToPeer({
-                action: 'file_pull_resp',
-                data: { reqId, fileId, available: false, error: '无串口链路可用' }
-            });
+            this._failAllSubscribers(fileId, '无串口链路可用');
         }
     }
 
     /**
      * 处理从 relay 对端收到的文件拉取响应
      */
-    _handleRelayPullResp(data) {
-        const { reqId, fileId, available, downloadUrl, error } = data;
+    _handleRelayPullResp(data, peerEntry = null) {
+        const { reqId, fileId, available, downloadUrl, httpPort, error } = data;
 
         relayLogger.info(`[中继] LAN 收到拉取响应: ${available ? '可用' : '不可用'} for ${fileId}`);
 
         const pending = this.pendingRelayPulls.get(fileId);
-        if (!pending) {
+        const active = this.activePulls.get(fileId);
+        if (!pending && !active) {
             relayLogger.debug(`[中继] 无匹配的待处理拉取请求: ${fileId}`);
             return;
         }
 
+        const fileName = (active && active.fileName) || (pending && pending.fileName) || `${fileId}.bin`;
+
         if (available && downloadUrl) {
-            // 从 LAN 对端下载文件
-            this._downloadFromPeer(fileId, pending.fileName, downloadUrl, pending.direction);
-        } else {
-            // 拉取失败
-            relayLogger.warn(`[中继] 文件拉取失败: ${error || '未知错误'}`);
-
-            if (pending.direction === 'serial' && this.scheduler) {
-                // 回传错误给串口请求方
-                const resp = { reqId, fileId, status: 'not_found', error: error || '文件不存在' };
-                const body = Buffer.from(JSON.stringify(resp), 'utf8');
-                this.scheduler.enqueue(PT.FILE_RELAY_RESP, 0, body, 1);
+            let peerBaseUrl = null;
+            if (peerEntry && peerEntry.url) {
+                try {
+                    const u = new URL(peerEntry.url);
+                    peerBaseUrl = `http://${u.hostname}:${httpPort || u.port || 3000}`;
+                } catch (e) { /* fallback */ }
             }
-
-            this.pendingRelayPulls.delete(fileId);
-            // 通知本地 WebUI
-            this.emit('relay_pull_failed', { fileId, error: error || '文件不存在' });
+            if (!peerBaseUrl && this.peerUrl) {
+                try {
+                    const u = new URL(this.peerUrl);
+                    peerBaseUrl = `http://${u.hostname}:${httpPort || u.port || 3000}`;
+                } catch (e) { /* fallback */ }
+            }
+            this._downloadFromPeer(fileId, fileName, downloadUrl, peerBaseUrl);
+        } else {
+            relayLogger.warn(`[中继] 文件拉取失败: ${error || '未知错误'}`);
+            this._failAllSubscribers(fileId, error || '文件不存在');
         }
     }
 
     /**
-     * 从 LAN 对端下载文件
+     * 从 LAN 对端下载文件（先写 .part 临时文件 -> MD5 校验 -> 原子转正进入分站仓库）
      */
-    _downloadFromPeer(fileId, fileName, downloadUrl, requestDirection) {
-        const peerUrlObj = new URL(this.peerUrl);
-        const fullUrl = `http://${peerUrlObj.hostname}:${peerUrlObj.port}${downloadUrl}`;
-
-        relayLogger.info(`[中继] 从 LAN 对端下载文件: ${fullUrl}`);
-
-        // 确保 received 目录存在
-        if (!fs.existsSync(this.receivedDir)) {
-            fs.mkdirSync(this.receivedDir, { recursive: true });
+    _downloadFromPeer(fileId, fileName, downloadUrl, peerBaseUrl) {
+        if (!peerBaseUrl) {
+            this._failAllSubscribers(fileId, '无法确定对端 HTTP 下载地址');
+            return;
         }
+        const fullUrl = `${peerBaseUrl}${downloadUrl}`;
+        relayLogger.info(`[中继] 从 LAN 对端下载文件至分站缓存: ${fullUrl}`);
 
-        const filePath = path.join(this.receivedDir, fileName);
-        const fileStream = fs.createWriteStream(filePath);
+        this._ensureStagingDir();
+        const partPath = this._getPartPath(fileId);
+        const stagingPath = this._getStagingPath(fileId);
+        const fileStream = fs.createWriteStream(partPath);
 
         http.get(fullUrl, (res) => {
             if (res.statusCode !== 200) {
                 relayLogger.error(`[中继] 下载失败: HTTP ${res.statusCode}`);
                 fileStream.close();
-                fs.unlinkSync(filePath);
-                this.pendingRelayPulls.delete(fileId);
-                this.emit('relay_pull_failed', { fileId, error: `HTTP ${res.statusCode}` });
+                this._failAllSubscribers(fileId, `HTTP ${res.statusCode}`);
                 return;
             }
 
             res.pipe(fileStream);
 
-            fileStream.on('finish', () => {
+            fileStream.on('finish', async () => {
                 fileStream.close();
-                relayLogger.info(`[中继] LAN 下载完成: ${filePath}`);
+                try {
+                    if (/^[a-f0-9]{32}$/i.test(fileId)) {
+                        const actualMd5 = await computeFileMd5(partPath);
+                        if (actualMd5 !== fileId.toLowerCase()) {
+                            relayLogger.error(`[中继] MD5 校验失败: expected=${fileId}, actual=${actualMd5}`);
+                            this._failAllSubscribers(fileId, 'MD5 校验失败，文件已损坏');
+                            return;
+                        }
+                    }
 
-                // 更新文件索引
-                this.fileIndex.set(fileId, { fileName, fullPath: filePath, local: true });
+                    fs.renameSync(partPath, stagingPath);
+                    relayLogger.info(`[中继] 分站缓存原子落盘完成: ${stagingPath}`);
 
-                // 根据请求来源方向，回传文件
-                if (requestDirection === 'serial') {
-                    // 串口方向请求的 → 通过串口发送文件
-                    relayLogger.info(`[中继] 向串口方向转发文件: ${fileName}`);
-                    this.emit('relay_send_file', { fileId, fileName, fullPath: filePath });
-                } else if (requestDirection === 'local') {
-                    // 本地 WebUI 请求的 → 通知 WebUI 文件已就绪
-                    this.emit('relay_pull_complete', { fileId, fileName, fullPath: filePath });
+                    this.fileIndex.set(fileId, {
+                        fileName,
+                        fullPath: stagingPath,
+                        md5: fileId,
+                        local: true,
+                        isStaging: true
+                    });
+
+                    this._completeAllSubscribers(fileId, fileName, stagingPath);
+                } catch (err) {
+                    relayLogger.error(`[中继] 分站缓存校验/落盘失败: ${err.message}`);
+                    this._failAllSubscribers(fileId, err.message);
                 }
-                // relay 方向的请求不应在此处理（file_pull_resp 已经响应了）
-
-                this.pendingRelayPulls.delete(fileId);
             });
         }).on('error', (err) => {
             relayLogger.error(`[中继] LAN 下载错误: ${err.message}`);
             fileStream.close();
-            if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-            this.pendingRelayPulls.delete(fileId);
-            this.emit('relay_pull_failed', { fileId, error: err.message });
+            this._failAllSubscribers(fileId, err.message);
         });
     }
 
     /**
-     * 文件接收完成回调（当串口接收到文件后，检查是否有待处理的 relay/local 拉取请求）
-     * 由 AppController 在文件传输完成时调用
+     * 文件接收完成回调（当串口接收到文件后，原子转入分站仓库并唤醒全部 Singleflight 订阅者）
      */
-    onFileReceived(fileId, fileName, fullPath) {
-        // 更新文件索引
-        this.fileIndex.set(fileId, { fileName, fullPath, local: true });
-
-        // 检查是否有待处理的中继拉取请求
-        const pending = this.pendingRelayPulls.get(fileId);
-        if (pending) {
-            if (pending.direction === 'relay') {
-                // relay 方向请求的 → 通过 LAN 回传文件下载地址
-                relayLogger.info(`[中继] 文件到达，回传给 LAN 对端: ${fileName}`);
-                this._sendToPeer({
-                    action: 'file_pull_resp',
-                    data: {
-                        reqId: pending.reqId,
-                        fileId,
-                        available: true,
-                        downloadUrl: `/api/relay/file/${fileId}`
-                    }
-                });
-                this.pendingRelayPulls.delete(fileId);
-            } else if (pending.direction === 'local') {
-                // 本地 WebUI 之前挂起的拉取
-                relayLogger.info(`[中继] 接收完成，通知本地 WebUI 文件已就绪: ${fileName}`);
-                this.emit('relay_pull_complete', { fileId, fileName, fullPath });
-                this.pendingRelayPulls.delete(fileId);
-            } else if (pending.direction === 'serial') {
-                // 串口方向请求的 → 发送文件至串口对端
-                relayLogger.info(`[中继] 接收完成，向串口对端发送文件: ${fileName}`);
-                this.emit('relay_send_file', { fileId, fileName, fullPath });
-                this.pendingRelayPulls.delete(fileId);
+    async onFileReceived(fileId, fileName, fullPath) {
+        let finalPath = fullPath;
+        try {
+            if (/^[a-f0-9]{32}$/i.test(fileId) && fs.existsSync(fullPath)) {
+                const actualMd5 = await computeFileMd5(fullPath);
+                if (actualMd5 !== fileId.toLowerCase()) {
+                    relayLogger.error(`[中继] 串口接收文件 MD5 校验失败: expected=${fileId}, actual=${actualMd5}`);
+                    this._failAllSubscribers(fileId, 'MD5 校验失败');
+                    return;
+                }
             }
+            finalPath = this._promoteToStaging(fileId, fullPath);
+        } catch (err) {
+            relayLogger.warn(`[中继] 转入分站缓存失败，使用原路径: ${err.message}`);
         }
+
+        this.fileIndex.set(fileId, { fileName, fullPath: finalPath, md5: fileId, local: true, isStaging: true });
+        this._completeAllSubscribers(fileId, fileName, finalPath);
     }
 
     // =====================================================================
@@ -988,13 +1076,22 @@ class RelayService extends EventEmitter {
      * 查找本地文件
      */
     _findLocalFile(fileId, fileName) {
-        // 先查文件索引
+        // 1. 先查文件索引
         const indexed = this.fileIndex.get(fileId);
         if (indexed && indexed.local && indexed.fullPath && fs.existsSync(indexed.fullPath)) {
             return indexed.fullPath;
         }
 
-        // 回退：在 received 目录中按文件名查找
+        // 2. 查沿途分站缓存仓库 (.staging/<md5>.blob)
+        if (fileId) {
+            const stagingPath = this._getStagingPath(fileId);
+            if (fs.existsSync(stagingPath)) {
+                this.fileIndex.set(fileId, { fileName: fileName || fileId, fullPath: stagingPath, md5: fileId, local: true, isStaging: true });
+                return stagingPath;
+            }
+        }
+
+        // 3. 回退：在 received 目录中按文件名查找
         if (fileName) {
             const filePath = path.join(this.receivedDir, fileName);
             if (fs.existsSync(filePath)) {

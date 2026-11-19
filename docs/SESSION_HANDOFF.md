@@ -5,14 +5,22 @@
 ---
 
 ## 📌 当前进行中任务基准 (Active Context)
-- **当前核心主线**：HTTP/1.1 通用透明反向代理重构（Virtual Port + Binary-Safe 透传 + 配置精简），后续待推进聊天文件传输 MD5 分站仓库升级
-- **当前版本基准**：`3.0.7`
+- **当前核心主线**：HTTP/1.1 通用透明反向代理（v3.0.7）与聊天界面文件传输 MD5 分站仓库、Singleflight 并发合并、IP-用户名对照表（v3.0.8）
+- **当前版本基准**：`3.0.8`
 - **当前分支状态**：`main`
 
 ---
 
 ## 🎯 核心业务与功能最新里程碑 (Core Feature Baseline)
 > **说明**：记录最近一次核心业务功能演进的物理提交与资产清单，供新会话启动时 100% 无损还原业务上下文。辅助性的文档/工作流变更不得覆写此处内容。
+
+### [阶段性演进：聊天文件 MD5 分站仓库、Singleflight 并发合并与 IP-用户名对照表 (v3.0.8)]
+- **改造概述**：
+  - 新增 [fileUtils.js](file:///e:/nodejs/serialSync/src/utils/fileUtils.js) 提供流式 `computeFileMd5()`，以 32 位 MD5 作为聊天界面文件全网内容唯一标识。
+  - 在 [AppController.js](file:///e:/nodejs/serialSync/src/core/interface/AppController.js) 改造 `sendFile` 为「按需拉取（先广播轻量 MD5 元数据卡片，点击接收后再拉取）」；新增局域网 `IP <-> 用户名` 持久化对照表与自动绑定解析（`resolveUsername`）。
+  - 在 [RelayService.js](file:///e:/nodejs/serialSync/src/core/services/RelayService.js) 落地沿途分站仓库 `received/.staging/`（`.part` 原子落盘 + MD5 校验转正）与 `activePulls` Singleflight 并发请求合并锁，消除多人同时下载对串口的重复占用。
+  - 在 [ApiServer.js](file:///e:/nodejs/serialSync/src/server/ApiServer.js) 与 [SettingsModal.jsx](file:///e:/nodejs/serialSync/src/web/src/features/settings/SettingsModal.jsx) 接入 IP 自动识别与对照表管理面板。
+  - 新增零依赖透明反代测试源服务 [test-source-server.js](file:///e:/nodejs/serialSync/scripts/test-source-server.js)。
 
 ### [阶段性重构：HTTP/1.1 通用透明反向代理（Virtual Port）与网络域自动派生 (v3.0.7)]
 - **改造概述**：
@@ -60,6 +68,7 @@
 ## 📜 历史交接归档流水 (Archive History)
 | 日期 | 版本 | 类型 | 关键成果概述 |
 | :--- | :--- | :--- | :--- |
+| 2026-11-19 | 3.0.8 | feat | 落地聊天文件 MD5 按需拉取、沿途分站仓库与 Singleflight 并发合并、IP-用户名对照表及透明反代测试源服务 |
 | 2026-11-19 | 3.0.7 | feat | 重构 HTTP/1.1 通用透明反代（Virtual Port、Binary-Safe 透传、zlib 压缩）与网络域自动派生，固化 v4 开发方案文档 |
 | 2026-11-18 | 3.0.6 | fix | 修复 Windows 7 + Node.js 18 下 os.hostname() 抛出 ENOSYS 启动崩溃，新增 getSafeHostname() 安全回退 |
 | 2026-10-16 | 3.0.5 | feature | 实现服务发现自动清理对齐、微服务全限定名寻址与 8 位字母数字不可变 nodeId 架构全栈贯通 |

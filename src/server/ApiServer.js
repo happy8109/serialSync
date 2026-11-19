@@ -24,6 +24,7 @@ class ApiServer {
         this.server = http.createServer(this.app);
         this.wss = new WebSocket.Server({ noServer: true });
         this.controller = new AppController();
+        this.controller.relayService.setLocalHttpPort(this.port);
         this.logger = logger.create('ApiServer');
 
         this._initMiddleware();
@@ -125,15 +126,23 @@ class ApiServer {
             }, 500);
         });
 
-        // 5. 发送聊天消息
+        const _getClientIp = (req) => {
+            const fwd = req.headers['x-forwarded-for'];
+            const raw = (typeof fwd === 'string' && fwd.split(',')[0]) || req.socket?.remoteAddress || req.ip || '';
+            return this.controller.normalizeIp(raw);
+        };
+
+        // 5. 发送聊天消息 (自动绑定/解析局域网 IP 对应用户名)
         router.post('/send/chat', (req, res) => {
             const { text, sender } = req.body;
             if (!text) return res.status(400).json({ error: 'Text is required' });
-            this.controller.sendChat(text, sender || {});
-            res.json({ success: true });
+            const clientIp = _getClientIp(req);
+            const resolvedNickname = this.controller.resolveUsername(clientIp, sender?.nickname || '');
+            this.controller.sendChat(text, { ...(sender || {}), nickname: resolvedNickname });
+            res.json({ success: true, nickname: resolvedNickname });
         });
 
-        // 6. 发送文件 (支持 multipart 上传或本地路径)
+        // 6. 发送文件 (支持 multipart 上传或本地路径，自动解析 IP 用户名)
         router.post('/send/file', upload.single('file'), async (req, res) => {
             let filePath;
             if (req.file) {
@@ -144,13 +153,48 @@ class ApiServer {
                 return res.status(400).json({ error: 'File or path is required' });
             }
 
-            const nickname = req.body.nickname || req.query.nickname || '';
+            const clientIp = _getClientIp(req);
+            const explicitNick = req.body.nickname || req.query.nickname || '';
+            const nickname = this.controller.resolveUsername(clientIp, explicitNick);
 
             try {
                 const fileId = await this.controller.sendFile(filePath, nickname);
                 res.json({ success: true, fileId });
             } catch (err) {
                 res.status(500).json({ error: err.message });
+            }
+        });
+
+        // 6.1 局域网 IP <-> 用户名对照表管理
+        router.get('/identity/ip-users', (req, res) => {
+            const currentIp = _getClientIp(req);
+            const ipUsers = this.controller.getIpUsers();
+            res.json({
+                success: true,
+                data: {
+                    ipUsers,
+                    currentIp,
+                    currentUser: ipUsers[currentIp] || ''
+                }
+            });
+        });
+
+        router.post('/identity/ip-users', (req, res) => {
+            const { ip, username } = req.body;
+            try {
+                const ipUsers = this.controller.setIpUser(ip, username);
+                res.json({ success: true, data: ipUsers });
+            } catch (err) {
+                res.status(400).json({ success: false, error: err.message });
+            }
+        });
+
+        router.delete('/identity/ip-users/:ip', (req, res) => {
+            try {
+                const ipUsers = this.controller.removeIpUser(decodeURIComponent(req.params.ip));
+                res.json({ success: true, data: ipUsers });
+            } catch (err) {
+                res.status(500).json({ success: false, error: err.message });
             }
         });
 
