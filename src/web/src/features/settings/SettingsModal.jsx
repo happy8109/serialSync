@@ -631,7 +631,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                 <p className="text-xs text-muted-foreground">
                                     定义本节点在多网级联拓扑中的身份，用于网络层三层路由寻址、服务发现与跨网调用。
                                 </p>
-                                <div className="grid grid-cols-3 gap-4">
+                                <div className="grid grid-cols-2 gap-4">
                                     <div className="space-y-2">
                                         <div className="flex items-center justify-between">
                                             <label className="text-sm font-medium">底层真 ID (不可变)</label>
@@ -643,21 +643,7 @@ const SettingsModal = ({ isOpen, onClose }) => {
                                             readOnly
                                             disabled
                                             className="w-full px-3 py-2 rounded-md border border-input bg-muted/60 text-muted-foreground font-mono text-sm cursor-not-allowed select-all"
-                                            title="底层不可变物理真 ID (8-char Alphanumeric)"
-                                        />
-                                    </div>
-                                    <div className="space-y-2">
-                                        <div className="flex items-center justify-between">
-                                            <label className="text-sm font-medium">网络域 (自动派生)</label>
-                                            <span className="text-[10px] text-muted-foreground">免配置防冲突</span>
-                                        </div>
-                                        <input
-                                            type="text"
-                                            value={identityConfig.network || (identityConfig.nodeId ? `net-${identityConfig.nodeId}` : '--')}
-                                            readOnly
-                                            disabled
-                                            className="w-full px-3 py-2 rounded-md border border-input bg-muted/60 text-muted-foreground font-mono text-sm cursor-not-allowed select-all"
-                                            title="系统基于底层真 ID 自动派生，无需手动设置"
+                                            title="底层不可变物理真 ID (8位字母+数字)"
                                         />
                                     </div>
                                     <div className="space-y-2">

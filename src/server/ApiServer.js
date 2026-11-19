@@ -490,8 +490,8 @@ class ApiServer {
                 }
             }
 
-            // 透明反代模式与网关模式统一走 Binary-Safe 原始透传通道
-            if (mode === 'transparent' || mode === 'gateway') {
+            // 透明反代模式统一走 Binary-Safe 原始透传通道
+            if (mode === 'transparent') {
                 try {
                     const qIdx = req.originalUrl.indexOf('?');
                     const rawQuery = qIdx >= 0 ? req.originalUrl.slice(qIdx) : '';

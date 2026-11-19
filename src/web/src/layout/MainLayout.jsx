@@ -37,7 +37,7 @@ const MainLayout = ({ children }) => {
                                 className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-[11px] font-medium bg-primary/10 text-primary border border-primary/20"
                                 title={config?.identity?.nodeId ? `物理真ID (不可变): ${config.identity.nodeId}` : undefined}
                             >
-                                <span>{config.identity.network ? `${config.identity.network} / ` : ''}{config.identity.nodeName}</span>
+                                <span>{config.identity.nodeName}</span>
                                 {config?.identity?.nodeId && (
                                     <span className="font-mono text-[10px] opacity-65 font-normal">
                                         ({config.identity.nodeId})

@@ -33,7 +33,13 @@ export const useAppStore = create(
 
             // Data Streams (Not persisted)
             logs: [],
-            addLog: (log) => set((state) => ({ logs: [...state.logs.slice(-99), log] })),
+            addLog: (log) => set((state) => {
+                const last = state.logs[state.logs.length - 1];
+                if (last && last.tag === log.tag && last.message === log.message && Math.abs((log.timestamp || 0) - (last.timestamp || 0)) < 1000) {
+                    return state;
+                }
+                return { logs: [...state.logs.slice(-99), log] };
+            }),
 
             // Chat History (Persisted)
             messages: [],

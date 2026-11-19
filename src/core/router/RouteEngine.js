@@ -166,6 +166,7 @@ class RouteEngine extends EventEmitter {
         // 4. 本地消费判定
         const isForLocal = packet.matchesDestination(this.identity.network, this.identity.nodeName, this.identity.nodeId);
         if (isForLocal) {
+            packet.fromLinkId = fromLinkId;
             routeLogger.debug(`[路由] 本地交付: ${packet.packetId} type=0x${packet.type.toString(16)} src=${packet.src}`);
             this.emit('local_packet', packet);
         }

@@ -19,11 +19,10 @@ const ChatMessage = ({ message, children }) => {
         if (isLocal) return 'Me';
         const sender = message.sender;
         if (!sender) return 'Remote';
-        const hostTag = (sender.network && sender.nodeName)
-            ? `[${sender.network}/${sender.nodeName}] `
-            : (sender.network ? `[${sender.network}] ` : (sender.nodeName ? `[${sender.nodeName}] ` : ''));
-        const namePart = sender.nickname || sender.nodeName || 'Remote';
-        return sender.nickname ? `${hostTag}${namePart}` : (sender.network ? `[${sender.network}] ${sender.nodeName}` : namePart);
+        if (sender.nickname && sender.nodeName) {
+            return `[${sender.nodeName}] ${sender.nickname}`;
+        }
+        return sender.nickname || sender.nodeName || 'Remote';
     };
 
     return (

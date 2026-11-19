@@ -64,7 +64,7 @@ const LiveTaskStream = () => {
                 {/* 右半部分 (对应 Tools 区) */}
                 <div className="col-span-6 min-w-0 flex min-h-0">
                     <LogColumn
-                        title="API Gateway"
+                        title="API Proxy"
                         logs={apiLogs}
                         color="bg-blue-500"
                         className="border-r border-border/50 flex-none w-[calc(50%+1px)]"

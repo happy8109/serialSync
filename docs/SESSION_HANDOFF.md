@@ -5,14 +5,21 @@
 ---
 
 ## 📌 当前进行中任务基准 (Active Context)
-- **当前核心主线**：HTTP/1.1 通用透明反向代理（v3.0.7）与聊天界面文件传输 MD5 分站仓库、Singleflight 并发合并、IP-用户名对照表（v3.0.8）
-- **当前版本基准**：`3.0.8`
+- **当前核心主线**：HTTP/1.1 通用透明反代（Virtual Port）、统一 `RouteEngine` 聊天文件分块拉取（`0x50–0x53`）与无重名冲突多网路由架构落地
+- **当前版本基准**：`3.0.9`
 - **当前分支状态**：`main`
 
 ---
 
 ## 🎯 核心业务与功能最新里程碑 (Core Feature Baseline)
 > **说明**：记录最近一次核心业务功能演进的物理提交与资产清单，供新会话启动时 100% 无损还原业务上下文。辅助性的文档/工作流变更不得覆写此处内容。
+
+### [阶段性收尾：统一 `RouteEngine` 聊天文件分块拉取、清理旧版 Gateway 与 UI/链路防冲突加固 (v3.0.9)]
+- **改造概述**：
+  - **聊天文件传输架构统一（[RelayService.js](file:///e:/nodejs/serialSync/src/core/services/RelayService.js) & [RouteEngine.js](file:///e:/nodejs/serialSync/src/core/router/RouteEngine.js) & [AppController.js](file:///e:/nodejs/serialSync/src/core/interface/AppController.js)）**：彻底剥离聊天文件拉取对 `FileTransferService` 单跳串口帧的依赖，统一接入 `RouteEngine` 原生协议（`0x50 FILE_RELAY_REQ` / `0x51 FILE_RELAY_RESP` / `0x52 FILE_CHUNK_REQ` / `0x53 FILE_CHUNK_RESP`），支持 LAN HTTP 优先拉取、跨网 4KB 分块拉取（含超时重试与实时进度推送）、`.staging/<md5>.part` 原子落盘与 MD5 校验、以及 `activePulls` Singleflight 并发合并。
+  - **清理旧版 `gateway` 兼容逻辑（[HttpProxyService.js](file:///e:/nodejs/serialSync/src/core/services/HttpProxyService.js)、[ApiServer.js](file:///e:/nodejs/serialSync/src/server/ApiServer.js)、[default.json](file:///e:/nodejs/serialSync/config/default.json)、[default.json.example](file:///e:/nodejs/serialSync/config/default.json.example)）**：统一收敛为 `transparent`（透明反代 + 虚拟端口持久化与端口冲突校验）与 `exact`（精确路由）两种模式。
+  - **节点重名防冲突加固（[RelayService.js](file:///e:/nodejs/serialSync/src/core/services/RelayService.js)）**：局域网链路注册优先使用不可变 `nodeId`（`lan:${nodeId}`），彻底消除 `nodeName` 重名导致链路覆盖的隐患。
+  - **前端 UI 与日志分类精简（[ServiceManager.jsx](file:///e:/nodejs/serialSync/src/web/src/features/api-forwarder/ServiceManager.jsx)、[SettingsModal.jsx](file:///e:/nodejs/serialSync/src/web/src/features/settings/SettingsModal.jsx)、[MainLayout.jsx](file:///e:/nodejs/serialSync/src/web/src/layout/MainLayout.jsx)、[ChatMessage.jsx](file:///e:/nodejs/serialSync/src/web/src/features/chat/ChatMessage.jsx)、[FileBubble.jsx](file:///e:/nodejs/serialSync/src/web/src/features/chat/FileBubble.jsx)、[LiveTaskStream.jsx](file:///e:/nodejs/serialSync/src/web/src/features/dashboard/LiveTaskStream.jsx)、[WebSocketService.jsx](file:///e:/nodejs/serialSync/src/web/src/services/WebSocketService.jsx)、[appStore.js](file:///e:/nodejs/serialSync/src/web/src/store/appStore.js)）**：去除界面中冗余的 `network` 域名显示；区分透明反代与精确路由操作入口；增加虚拟端口冲突校验与自动避让；修正底部四栏日志（`API Proxy` 命名、文件错误归入 `FILE` 栏、相邻重复日志去重）。
 
 ### [阶段性演进：聊天文件 MD5 分站仓库、Singleflight 并发合并与 IP-用户名对照表 (v3.0.8)]
 - **改造概述**：
@@ -68,6 +75,7 @@
 ## 📜 历史交接归档流水 (Archive History)
 | 日期 | 版本 | 类型 | 关键成果概述 |
 | :--- | :--- | :--- | :--- |
+| 2026-11-19 | 3.0.9 | feat | 统一 RouteEngine 聊天文件分块拉取协议（0x50-0x53），清理旧版 gateway 逻辑，加固节点重名链路隔离与 UI/日志体验 |
 | 2026-11-19 | 3.0.8 | feat | 落地聊天文件 MD5 按需拉取、沿途分站仓库与 Singleflight 并发合并、IP-用户名对照表及透明反代测试源服务 |
 | 2026-11-19 | 3.0.7 | feat | 重构 HTTP/1.1 通用透明反代（Virtual Port、Binary-Safe 透传、zlib 压缩）与网络域自动派生，固化 v4 开发方案文档 |
 | 2026-11-18 | 3.0.6 | fix | 修复 Windows 7 + Node.js 18 下 os.hostname() 抛出 ENOSYS 启动崩溃，新增 getSafeHostname() 安全回退 |

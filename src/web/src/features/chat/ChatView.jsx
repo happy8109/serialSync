@@ -82,8 +82,8 @@ const ChatView = () => {
                         id: transferId,
                         name: file.name,
                         size: file.size,
-                        progress: 0,
-                        status: 'sending'
+                        progress: 100,
+                        status: 'completed'
                     });
 
                     addMessage({

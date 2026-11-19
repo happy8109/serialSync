@@ -82,7 +82,7 @@ const FileBubble = ({ transferId, isLocal }) => {
                         "text-[10px] opacity-70",
                         isLocal ? "text-primary-foreground" : "text-muted-foreground"
                     )}>
-                        {formatSize(size)} {sender && ` • 来自 ${sender.nickname || sender.nodeName}${(sender.network && sender.nodeName && sender.nickname) ? ` [${sender.network}/${sender.nodeName}]` : (sender.network ? ` [${sender.network}]` : '')}`}
+                        {formatSize(size)} {sender && ` • 来自 ${sender.nickname || sender.nodeName}${(sender.nodeName && sender.nickname) ? ` [${sender.nodeName}]` : ''}`}
                     </div>
                 </div>
             </div>
@@ -221,7 +221,13 @@ const FileBubble = ({ transferId, isLocal }) => {
                                     body: JSON.stringify({ fileId: transferId, fileName: name })
                                 });
                                 const result = await response.json();
-                                if (!result.success || (!result.pulling && !result.available)) {
+                                if (result.success && result.available) {
+                                    updateTransfer(transferId, {
+                                        status: 'completed',
+                                        progress: 100,
+                                        fullPath: result.fullPath
+                                    });
+                                } else if (!result.success || (!result.pulling && !result.available)) {
                                     updateTransfer(transferId, { status: 'failed', error: result.error || '中继拉取发起失败' });
                                 }
                             } catch (err) {

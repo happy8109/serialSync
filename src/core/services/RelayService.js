@@ -28,8 +28,12 @@ const PT = {
     MSG_TEXT: 0x10,
     FILE_NOTIFY: 0x15,
     FILE_RELAY_REQ: 0x50,
-    FILE_RELAY_RESP: 0x51
+    FILE_RELAY_RESP: 0x51,
+    FILE_CHUNK_REQ: 0x52,
+    FILE_CHUNK_RESP: 0x53
 };
+
+const PULL_CHUNK_SIZE = 4096; // 4KB 串口友好分块大小
 
 class RelayService extends EventEmitter {
     constructor() {
@@ -205,11 +209,11 @@ class RelayService extends EventEmitter {
      * 声明感兴趣的帧类型
      */
     getInterestedTypes() {
-        return [PT.FILE_NOTIFY, PT.FILE_RELAY_REQ, PT.FILE_RELAY_RESP];
+        return [PT.FILE_NOTIFY, PT.FILE_RELAY_REQ, PT.FILE_RELAY_RESP, PT.FILE_CHUNK_REQ, PT.FILE_CHUNK_RESP];
     }
 
     /**
-     * 处理从串口收到的帧
+     * 处理从串口/路由引擎收到的帧
      */
     handleFrame(frame) {
         switch (frame.type) {
@@ -221,6 +225,12 @@ class RelayService extends EventEmitter {
                 break;
             case PT.FILE_RELAY_RESP:
                 this._handleSerialRelayResp(frame);
+                break;
+            case PT.FILE_CHUNK_REQ:
+                this._handleFileChunkReq(frame);
+                break;
+            case PT.FILE_CHUNK_RESP:
+                this._handleFileChunkResp(frame);
                 break;
         }
     }
@@ -336,10 +346,19 @@ class RelayService extends EventEmitter {
      */
     _onPeerConnected(ws, options = {}) {
         const peerId = options.url || `peer_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+        let remoteIp = '';
+        if (options.url) {
+            try { remoteIp = new URL(options.url).hostname; } catch (e) { /* ignore */ }
+        }
+        if (!remoteIp && ws._socket && ws._socket.remoteAddress) {
+            remoteIp = ws._socket.remoteAddress.replace(/^::ffff:/, '');
+            if (remoteIp === '::1') remoteIp = '127.0.0.1';
+        }
         const peerEntry = {
             id: peerId,
             ws,
             url: options.url || null,
+            remoteIp,
             isClient: !!options.isClient,
             identity: null,
             linkId: null
@@ -369,7 +388,8 @@ class RelayService extends EventEmitter {
                 data: {
                     nodeId: this.identity.nodeId,
                     nodeName: this.identity.nodeName,
-                    network: this.identity.network
+                    network: this.identity.network,
+                    httpPort: this.localHttpPort
                 }
             }));
         } catch (err) {
@@ -454,9 +474,10 @@ class RelayService extends EventEmitter {
                 }
                 relayLogger.info(`[中继] 对端握手: ${data.network ? '[' + data.network + '] ' : ''}${data.nodeName}${data.nodeId ? ' (' + data.nodeId + ')' : ''}`);
 
-                // 注册该 LAN 对端为 RouteEngine 的通信链路
-                if (this.routeEngine && data.nodeName) {
-                    const linkId = `lan:${data.nodeName}`;
+                // 注册该 LAN 对端为 RouteEngine 的通信链路 (优先使用不可变 nodeId，避免 nodeName 重名覆盖)
+                const linkKey = data.nodeId || data.nodeName;
+                if (this.routeEngine && linkKey) {
+                    const linkId = `lan:${linkKey}`;
                     if (peerEntry) peerEntry.linkId = linkId;
 
                     this.routeEngine.registerLink(linkId, {
@@ -551,6 +572,8 @@ class RelayService extends EventEmitter {
 
             // 去重检查
             if (data.msgId && this._isDuplicate(data.msgId)) return;
+
+            relayLogger.info(`[中继] 收到文件通知: ${data.fileName} (${data.fileId})`);
 
             // 记录文件索引
             if (data.fileId) {
@@ -782,37 +805,41 @@ class RelayService extends EventEmitter {
 
         const reqId = `pull_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
 
-        // 1.5 防死锁与 Singleflight 并发合并：若已有拉取/串口接收在进行，直接订阅等待
+        // 2. Singleflight 并发合并：若已有同 fileId 拉取在进行，直接复用等待
         const isFirst = this._addPullSubscriber(fileId, fileName, { direction: 'local', reqId, peerKey: 'local', fileName });
-        if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
-            relayLogger.info(`[中继] 文件已在串口接收中: ${fileId}，进入 Singleflight 等待`);
-            this.pendingRelayPulls.set(fileId, { direction: 'local', requestedAt: Date.now(), reqId, fileName });
-            return { available: false, pulling: true, reqId, status: 'receiving' };
-        }
         if (!isFirst) {
             return { available: false, pulling: true, reqId, coalesced: true };
         }
 
-        this.pendingRelayPulls.set(fileId, { direction: 'local', requestedAt: Date.now(), reqId, fileName });
+        const entry = this.activePulls.get(fileId);
+        entry.reqId = reqId;
+        entry.state = 'locating';
+        entry.locateTimer = setTimeout(() => {
+            if (entry.state === 'locating') {
+                relayLogger.warn(`[中继] 寻址超时，未找到持有文件 ${fileName} (${fileId}) 的在线节点`);
+                this._failAllSubscribers(fileId, '未找到持有该文件的在线节点');
+            }
+        }, 12000);
 
-        // 2. 发起唯一一次上游拉取请求
+        // 3. 通过 RouteEngine 全网广播寻址（定位持有副本的最近节点）
         if (this.routeEngine) {
-            const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
+            const requester = this.routeEngine.localAddress;
+            const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName, requester }), 'utf8');
             this.routeEngine.send({
                 type: PT.FILE_RELAY_REQ,
                 dst: '*',
                 payload: body,
                 priority: 1
             });
+            relayLogger.info(`[中继] 已发起全网文件寻址: ${fileName} (${fileId}) from ${requester}`);
         } else if (this.relayReady) {
+            this.pendingRelayPulls.set(fileId, { direction: 'local', requestedAt: Date.now(), reqId, fileName });
             this._sendToPeer({
                 action: 'file_pull_req',
                 data: { reqId, fileId, fileName }
             });
-        } else if (this.scheduler) {
-            const body = Buffer.from(JSON.stringify({ reqId, fileId, fileName }), 'utf8');
-            this.scheduler.enqueue(PT.FILE_RELAY_REQ, 0, body, 1);
         } else {
+            clearTimeout(entry.locateTimer);
             this._failAllSubscribers(fileId, '无可用中继链路');
             throw new Error('无可用中继链路');
         }
@@ -821,72 +848,280 @@ class RelayService extends EventEmitter {
     }
 
     /**
-     * 处理从串口收到的文件拉取请求
+     * 处理收到的文件寻址请求 (PT.FILE_RELAY_REQ)
      */
     _handleSerialRelayReq(frame) {
         try {
             const data = JSON.parse(frame.body.toString('utf8'));
-            const { reqId, fileId, fileName } = data;
+            const { reqId, fileId, fileName, requester } = data;
 
-            relayLogger.info(`[中继] 串口收到文件拉取请求: ${fileName} (${fileId})`);
-
-            // 防重发：若本地正在通过串口发送该文件，忽略重复请求
-            if (this.fileTransferService && this.fileTransferService.isSending(fileId)) {
-                relayLogger.info(`[中继] 本地正在向串口发送文件 (${fileId})，忽略重复拉取请求`);
-                return;
-            }
-
-            // 检查本地是否有文件（含分站缓存）
             const localFile = this._findLocalFile(fileId, fileName);
-            if (localFile) {
-                relayLogger.info(`[中继] 本地找到文件，直接通过串口发送: ${localFile}`);
-                this.emit('relay_send_file', { fileId, fileName, fullPath: localFile });
+            if (!localFile) {
+                // 本机无此文件，RouteEngine 已自动向其他链路泛洪，无需任何操作
                 return;
             }
 
-            // Singleflight 并发合并（含正在串口接收中）
-            const isFirst = this._addPullSubscriber(fileId, fileName, { direction: 'serial', reqId, peerKey: 'serial', fileName });
-            this.pendingRelayPulls.set(fileId, { direction: 'serial', requestedAt: Date.now(), reqId, fileName });
+            const stats = fs.statSync(localFile);
+            const targetDst = requester || (frame.route ? frame.route.src : '*');
+            const holder = this.routeEngine ? this.routeEngine.localAddress : '';
 
-            if (this.fileTransferService && this.fileTransferService.isReceiving(fileId)) {
-                relayLogger.info(`[中继] 本地正在接收该文件 (${fileId})，已合并至 Singleflight 等待`);
-                return;
-            }
-            if (!isFirst) {
-                return;
-            }
+            relayLogger.info(`[中继] 命中本地文件 ${fileName} (${fileId})，回复寻址响应 -> ${targetDst}`);
 
-            if (this.relayReady) {
-                relayLogger.info(`[中继] 本地无文件，转发拉取请求到 LAN 对端`);
-                this._sendToPeer({
-                    action: 'file_pull_req',
-                    data: { reqId, fileId, fileName }
+            if (this.routeEngine) {
+                const respBody = Buffer.from(JSON.stringify({
+                    reqId,
+                    fileId,
+                    available: true,
+                    fileSize: stats.size,
+                    holder,
+                    httpPort: this.localHttpPort
+                }), 'utf8');
+                this.routeEngine.send({
+                    type: PT.FILE_RELAY_RESP,
+                    dst: targetDst,
+                    payload: respBody,
+                    priority: 1
                 });
-            } else {
-                relayLogger.warn(`[中继] 本地无文件且无 relay 对端，拉取失败`);
-                this._failAllSubscribers(fileId, '文件不存在');
             }
         } catch (err) {
-            relayLogger.error(`[中继] 解析串口拉取请求失败: ${err.message}`);
+            relayLogger.error(`[中继] 处理文件寻址请求失败: ${err.message}`);
         }
     }
 
     /**
-     * 处理从串口收到的文件拉取响应
+     * 处理收到的文件寻址响应 (PT.FILE_RELAY_RESP)
      */
     _handleSerialRelayResp(frame) {
         try {
             const data = JSON.parse(frame.body.toString('utf8'));
-            relayLogger.info(`[中继] 串口收到拉取响应: ${data.status} for ${data.fileId}`);
+            const { reqId, fileId, available, fileSize, holder, httpPort } = data;
+            if (!available) return;
 
-            // 如果有待处理的 relay 方向请求，转发响应给 relay 对端
-            const pending = this.pendingRelayPulls.get(data.fileId);
-            if (pending && pending.direction === 'relay') {
-                this._sendToPeer({ action: 'file_pull_resp', data });
-                this.pendingRelayPulls.delete(data.fileId);
+            const entry = this.activePulls.get(fileId);
+            if (!entry || entry.state !== 'locating') return;
+
+            if (entry.locateTimer) {
+                clearTimeout(entry.locateTimer);
+                entry.locateTimer = null;
+            }
+
+            // 优先检测是否来自局域网直连对端 (lan:xxx)，若是则走高速 LAN HTTP 下载
+            const isFromLan = !!(frame.fromLinkId && frame.fromLinkId.startsWith('lan:'));
+            if (isFromLan) {
+                let peerBaseUrl = null;
+                for (const p of this.peers.values()) {
+                    if (p.linkId === frame.fromLinkId && p.remoteIp) {
+                        peerBaseUrl = `http://${p.remoteIp}:${httpPort || 3000}`;
+                        break;
+                    }
+                }
+                if (peerBaseUrl) {
+                    entry.state = 'downloading_lan';
+                    relayLogger.info(`[中继] 命中 LAN 就近节点 (${frame.fromLinkId})，走 HTTP 高速拉取: ${peerBaseUrl}`);
+                    this._downloadFromPeer(fileId, entry.fileName, `/api/relay/file/${fileId}`, peerBaseUrl);
+                    return;
+                }
+            }
+
+            // 跨网串口/多跳场景：通过 RouteEngine 分块拉取 (0x52 / 0x53)
+            entry.state = 'downloading';
+            entry.holder = holder || (frame.route ? frame.route.src : '*');
+            entry.fileSize = fileSize || 0;
+            entry.offset = 0;
+            entry.retries = 0;
+            entry.startedAt = Date.now();
+
+            this._ensureStagingDir();
+            const partPath = this._getPartPath(fileId);
+            entry.partFd = fs.openSync(partPath, 'w');
+
+            relayLogger.info(`[中继] 开始跨网分块拉取: ${entry.fileName} (${entry.fileSize}B) <- ${entry.holder}`);
+
+            if (entry.fileSize === 0) {
+                this._finalizeChunkedPull(fileId);
+            } else {
+                this._requestNextChunk(fileId);
             }
         } catch (err) {
-            relayLogger.error(`[中继] 解析串口拉取响应失败: ${err.message}`);
+            relayLogger.error(`[中继] 处理文件寻址响应失败: ${err.message}`);
+        }
+    }
+
+    _requestNextChunk(fileId) {
+        const entry = this.activePulls.get(fileId);
+        if (!entry || entry.state !== 'downloading') return;
+
+        if (entry.chunkTimer) clearTimeout(entry.chunkTimer);
+        entry.chunkTimer = setTimeout(() => {
+            if (!this.activePulls.has(fileId)) return;
+            entry.retries = (entry.retries || 0) + 1;
+            if (entry.retries <= 3) {
+                relayLogger.warn(`[中继] 分块超时重试 (${entry.retries}/3): offset=${entry.offset}`);
+                this._requestNextChunk(fileId);
+            } else {
+                if (entry.partFd !== null) {
+                    try { fs.closeSync(entry.partFd); } catch (e) { /* ignore */ }
+                    entry.partFd = null;
+                }
+                this._failAllSubscribers(fileId, '跨网文件分块拉取超时');
+            }
+        }, 15000);
+
+        const length = Math.min(PULL_CHUNK_SIZE, entry.fileSize - entry.offset);
+        const body = Buffer.from(JSON.stringify({
+            reqId: entry.reqId,
+            fileId,
+            offset: entry.offset,
+            length,
+            requester: this.routeEngine.localAddress
+        }), 'utf8');
+
+        this.routeEngine.send({
+            type: PT.FILE_CHUNK_REQ,
+            dst: entry.holder,
+            payload: body,
+            priority: 2
+        });
+    }
+
+    _handleFileChunkReq(frame) {
+        try {
+            const data = JSON.parse(frame.body.toString('utf8'));
+            const { reqId, fileId, offset, length, requester } = data;
+            const targetDst = requester || (frame.route ? frame.route.src : '*');
+
+            const localFile = this._findLocalFile(fileId);
+            if (!localFile) {
+                const errBody = Buffer.from(JSON.stringify({ reqId, fileId, offset, error: '源文件不存在' }), 'utf8');
+                this.routeEngine.send({ type: PT.FILE_CHUNK_RESP, dst: targetDst, payload: errBody, priority: 2 });
+                return;
+            }
+
+            const stats = fs.statSync(localFile);
+            const readLen = Math.max(0, Math.min(length || PULL_CHUNK_SIZE, stats.size - offset));
+            const buf = Buffer.alloc(readLen);
+            if (readLen > 0) {
+                const fd = fs.openSync(localFile, 'r');
+                try {
+                    fs.readSync(fd, buf, 0, readLen, offset);
+                } finally {
+                    fs.closeSync(fd);
+                }
+            }
+
+            const respBody = Buffer.from(JSON.stringify({
+                reqId,
+                fileId,
+                offset,
+                dataBase64: buf.toString('base64')
+            }), 'utf8');
+
+            this.routeEngine.send({
+                type: PT.FILE_CHUNK_RESP,
+                dst: targetDst,
+                payload: respBody,
+                priority: 2
+            });
+        } catch (err) {
+            relayLogger.error(`[中继] 读取分块失败: ${err.message}`);
+        }
+    }
+
+    _handleFileChunkResp(frame) {
+        try {
+            const data = JSON.parse(frame.body.toString('utf8'));
+            const { fileId, offset, dataBase64, error } = data;
+            const entry = this.activePulls.get(fileId);
+            if (!entry || entry.state !== 'downloading') return;
+
+            if (error) {
+                if (entry.chunkTimer) clearTimeout(entry.chunkTimer);
+                if (entry.partFd !== null) {
+                    try { fs.closeSync(entry.partFd); } catch (e) { /* ignore */ }
+                    entry.partFd = null;
+                }
+                this._failAllSubscribers(fileId, error);
+                return;
+            }
+
+            // 严格按序写入，忽略乱序重复包
+            if (offset !== entry.offset) return;
+
+            if (entry.chunkTimer) {
+                clearTimeout(entry.chunkTimer);
+                entry.chunkTimer = null;
+            }
+            entry.retries = 0;
+
+            const chunkBuf = dataBase64 ? Buffer.from(dataBase64, 'base64') : Buffer.alloc(0);
+            if (chunkBuf.length > 0 && entry.partFd !== null) {
+                fs.writeSync(entry.partFd, chunkBuf, 0, chunkBuf.length, offset);
+            }
+            entry.offset += chunkBuf.length;
+
+            const elapsedSec = Math.max(0.1, (Date.now() - entry.startedAt) / 1000);
+            const percent = entry.fileSize > 0 ? Math.min(99, Math.round((entry.offset / entry.fileSize) * 100)) : 100;
+            this.emit('relay_progress', {
+                fileId,
+                type: 'receive',
+                file: entry.fileName,
+                size: entry.fileSize,
+                percent,
+                speed: Math.round(entry.offset / elapsedSec),
+                status: 'receiving'
+            });
+
+            if (entry.offset < entry.fileSize && chunkBuf.length > 0) {
+                this._requestNextChunk(fileId);
+            } else {
+                this._finalizeChunkedPull(fileId);
+            }
+        } catch (err) {
+            relayLogger.error(`[中继] 写入分块失败: ${err.message}`);
+        }
+    }
+
+    async _finalizeChunkedPull(fileId) {
+        const entry = this.activePulls.get(fileId);
+        if (!entry) return;
+
+        if (entry.chunkTimer) {
+            clearTimeout(entry.chunkTimer);
+            entry.chunkTimer = null;
+        }
+        if (entry.partFd !== null) {
+            try { fs.closeSync(entry.partFd); } catch (e) { /* ignore */ }
+            entry.partFd = null;
+        }
+
+        const partPath = this._getPartPath(fileId);
+        const stagingPath = this._getStagingPath(fileId);
+
+        try {
+            if (/^[a-f0-9]{32}$/i.test(fileId)) {
+                const actualMd5 = await computeFileMd5(partPath);
+                if (actualMd5 !== fileId.toLowerCase()) {
+                    relayLogger.error(`[中继] 分块拉取 MD5 校验失败: expected=${fileId}, actual=${actualMd5}`);
+                    this._failAllSubscribers(fileId, 'MD5 校验失败，文件可能已损坏');
+                    return;
+                }
+            }
+
+            fs.renameSync(partPath, stagingPath);
+            relayLogger.info(`[中继] 跨网分块拉取完成并写入分站仓库: ${stagingPath}`);
+
+            this.fileIndex.set(fileId, {
+                fileName: entry.fileName,
+                fullPath: stagingPath,
+                md5: fileId,
+                local: true,
+                isStaging: true
+            });
+
+            this._completeAllSubscribers(fileId, entry.fileName, stagingPath);
+        } catch (err) {
+            relayLogger.error(`[中继] 落盘失败: ${err.message}`);
+            this._failAllSubscribers(fileId, err.message);
         }
     }
 
@@ -964,7 +1199,10 @@ class RelayService extends EventEmitter {
 
         if (available && downloadUrl) {
             let peerBaseUrl = null;
-            if (peerEntry && peerEntry.url) {
+            const targetPort = httpPort || (peerEntry && peerEntry.identity && peerEntry.identity.httpPort) || 3000;
+            if (peerEntry && peerEntry.remoteIp) {
+                peerBaseUrl = `http://${peerEntry.remoteIp}:${targetPort}`;
+            } else if (peerEntry && peerEntry.url) {
                 try {
                     const u = new URL(peerEntry.url);
                     peerBaseUrl = `http://${u.hostname}:${httpPort || u.port || 3000}`;

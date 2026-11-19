@@ -425,8 +425,8 @@ class FileTransferService extends EventEmitter {
                     // 清理临时文件
                     try { if (fs.existsSync(s.partPath)) fs.unlinkSync(s.partPath); } catch (e) { }
                     try { if (fs.existsSync(s.metaPath)) fs.unlinkSync(s.metaPath); } catch (e) { }
-                    // 虽然丢弃了，但对发送端来说是成功的（因为传输没错），回复 FIN_ACK
-                    this.emit('complete', { fileId: s.id, type: 'receive', file: s.name, fullPath: null, status: 'skipped' });
+                    // 虽然丢弃了，但对发送端来说是成功的（因为传输没错），回复 FIN_ACK 并返回已存在路径
+                    this.emit('complete', { fileId: s.id, type: 'receive', file: s.name, fullPath: finalSavePath, status: 'skipped' });
                     this._sendJson(TYPE.FILE_FIN_ACK, { id: s.id }, 1);
                     this.recvSessions.delete(data.id);
                     return;

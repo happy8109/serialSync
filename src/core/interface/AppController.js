@@ -173,7 +173,8 @@ class AppController extends EventEmitter {
                 type: packet.type,
                 seq: packet.seq,
                 body: packet.payload,
-                route: packet
+                route: packet,
+                fromLinkId: packet.fromLinkId || null
             };
             this.serviceManager.handleFrame(frame);
         });
@@ -283,6 +284,10 @@ class AppController extends EventEmitter {
                 fileId: data.fileId,
                 message: data.error
             });
+        });
+
+        this.relayService.on('relay_progress', (data) => {
+            this.emit('progress', data);
         });
 
         this.relayService.on('relay_status', (status) => {
@@ -534,25 +539,16 @@ class AppController extends EventEmitter {
 
         // 广播轻量级文件卡片（仅元数据 + MD5，不提前占用串口发送实体）
         if (this.relayService) {
+            const stagingPath = this.relayService._promoteToStaging(md5, filePath);
             this.relayService.broadcastFileNotify({
                 fileId: md5,
                 md5,
                 fileName,
                 fileSize: stats.size,
-                fullPath: filePath,
+                fullPath: stagingPath,
                 sender: senderInfo
             });
         }
-
-        // 本地立即回显发送成功卡片
-        this.emit('complete', {
-            fileId: md5,
-            md5,
-            type: 'send',
-            file: fileName,
-            fileSize: stats.size,
-            fullPath: filePath
-        });
 
         return md5;
     }

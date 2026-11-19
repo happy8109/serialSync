@@ -222,7 +222,7 @@ class HttpProxyService extends EventEmitter {
                     headers: svc.headers,
                     params: svc.params
                 };
-                if (svc.mode === 'gateway' || svc.mode === 'transparent') {
+                if (svc.mode === 'transparent') {
                     entry.mode = svc.mode;
                 }
                 currentConfig.services.localServices[id] = entry;
@@ -675,25 +675,11 @@ class HttpProxyService extends EventEmitter {
             return;
         }
 
-        // 2. Exact / Legacy Gateway Mode
-        let endpoint = svc.endpoint;
-        let method = svc.method;
-        let targetHeaders = { ...svc.headers };
+        // 2. Exact Mode
+        const endpoint = svc.endpoint;
+        const method = svc.method;
+        const targetHeaders = { ...svc.headers };
         let reqBody = null;
-
-        if (params && params.__gateway) {
-            if (svc.mode === 'gateway' || svc.mode === 'transparent') {
-                const gatewayMeta = params.__gateway;
-                method = gatewayMeta.method || 'GET';
-
-                if (gatewayMeta.path) {
-                    const baseUrl = endpoint.replace(/\/+$/, '');
-                    const subPath = gatewayMeta.path.startsWith('/') ? gatewayMeta.path : `/${gatewayMeta.path}`;
-                    endpoint = `${baseUrl}${subPath}`;
-                }
-            }
-            delete params.__gateway;
-        }
 
         if (params && params.__headers) {
             const inboundHeaders = params.__headers;
@@ -1299,7 +1285,8 @@ class HttpProxyService extends EventEmitter {
         }
 
         if (this.virtualPorts.has(portNum)) {
-            this.stopVirtualPort(portNum, false);
+            const existing = this.virtualPorts.get(portNum);
+            throw new Error(`端口 ${portNum} 已被服务 [${existing.serviceId}] 占用，请更换其他端口`);
         }
 
         const entry = {

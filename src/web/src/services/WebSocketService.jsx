@@ -69,7 +69,7 @@ const WebSocketService = () => {
                                 sender: data.sender || null
                             });
                             addMessage({
-                                id: `msg_${data.fileId}`,
+                                id: data.msgId || `msg_${data.fileId}_${Date.now()}`,
                                 from: 'remote',
                                 type: 'file',
                                 content: data.fileName,
@@ -142,7 +142,9 @@ const WebSocketService = () => {
                                 status: 'completed',
                                 fullPath: data.fullPath
                             });
-                            addLog({ timestamp: Date.now(), level: 'info', tag: 'FILE', message: `Transfer complete: ${data.file}` });
+                            if (!data.isHidden) {
+                                addLog({ timestamp: Date.now(), level: 'info', tag: 'FILE', message: `Transfer complete: ${data.file}` });
+                            }
                             break;
                         case 'error':
                             if (data.fileId) {
@@ -151,7 +153,7 @@ const WebSocketService = () => {
                                     error: data.message
                                 });
                             }
-                            addLog({ timestamp: Date.now(), level: 'error', tag: 'SYSTEM', message: data.message });
+                            addLog({ timestamp: Date.now(), level: 'error', tag: data.fileId ? 'FILE' : 'SYSTEM', message: data.message });
                             break;
                         case 'cancelled':
                             updateTransfer(data.fileId, {

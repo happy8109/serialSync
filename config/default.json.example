@@ -28,13 +28,11 @@
   "identity": {
     "nodeId": "",
     "nodeName": "Node-A",
-    "network": "A-Network"
+    "network": "",
+    "ipUsers": {}
   },
   "relay": {
-    "peerUrl": "ws://192.168.1.100:3003/relay",
-    "peers": [
-      "ws://192.168.1.100:3003/relay"
-    ]
+    "peers": []
   },
   "transfer": {
     "chunkSize": 2048,
@@ -69,10 +67,10 @@
       },
       "ollama_api": {
         "name": "Ollama LLM",
-        "description": "Ollama Gateway API",
+        "description": "Ollama Transparent Proxy",
         "version": "1.0",
         "endpoint": "http://localhost:11434",
-        "mode": "gateway",
+        "mode": "transparent",
         "timeout": 60000,
         "enabled": true,
         "headers": {},
@@ -90,7 +88,8 @@
         "headers": {},
         "params": {}
       }
-    }
+    },
+    "virtualPorts": []
   },
   "server": {
     "port": 3003
